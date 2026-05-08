@@ -15,7 +15,7 @@ variable "instance_name" {
 variable "ami_id" {
   description = "Lab AMI — ap-south-1 golden image (semiconlabs-dcv-watch baked via golden-ami-dcv-watcher.sh)"
   type        = string
-  default     = "ami-05b21fd04a458bc62"
+  default     = "ami-035d56902b1949f48"
 }
 
 variable "name" {

@@ -84,4 +84,4 @@ systemctl daemon-reload
 systemctl enable semiconlabs-dcv-watch.service
 systemctl restart semiconlabs-dcv-watch.service || true
 
-echo "semiconlabs-dcv-watch installed. Create AMI from this instance, then set terraform ami_id / DEFAULT_LAB_CONFIGS.ami_id to the new id (repo default reference: ami-05b21fd04a458bc62)."
+echo "semiconlabs-dcv-watch installed. Create AMI from this instance, then set terraform ami_id / DEFAULT_LAB_CONFIGS.ami_id to the new id (repo default reference: ami-035d56902b1949f48)."

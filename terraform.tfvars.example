@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars (gitignored) and adjust. Current golden lab AMI (ap-south-1, DCV watcher baked in):
-ami_id = "ami-05b21fd04a458bc62"
+ami_id = "ami-035d56902b1949f48"
 
 # Optional overrides — defaults also live in variables.tf
 # instance_type = "m6a.xlarge"
