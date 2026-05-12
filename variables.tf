@@ -151,9 +151,14 @@ variable "ad_computer_ou" {
 }
 
 variable "ad_dns_ips" {
-  description = "AD DNS (usually domain controller IPs). From AD_SERVER_IP in .env; add a second DC IP if you have one."
+  description = <<-EOT
+    AD DNS IP addresses (usually both domain controllers).
+    Order matters for SSM domain join: index 0 must be a single valid IPv4 sent to AWS-JoinDirectoryServiceDomain
+    (Terraform cannot pass multiple values in parameters; comma-join is rejected by AWS). Remaining entries
+    are still applied on the instance resolver via user-data.
+  EOT
   type        = list(string)
-  default     = ["10.10.149.108","10.10.136.0"]
+  default     = ["10.10.149.108", "10.10.136.0"]
 }
 
 variable "dcv_use_console_sessions" {

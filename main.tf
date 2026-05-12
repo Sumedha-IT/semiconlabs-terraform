@@ -4,6 +4,11 @@ provider "aws" {
 
 locals {
   lower_ad_domain = lower(var.ad_domain)
+  # aws_ssm_association.parameters only accepts string values (not lists). AWS also rejects a single
+  # comma-separated value for dnsIpAddresses (validates the whole string as one IPv4).
+  # Passing one directory DNS IP satisfies SSM; user-data still applies the full var.ad_dns_ips list
+  # to the NIC resolver (nmcli). Put the primary DC DNS first in ad_dns_ips.
+  ad_ssm_join_dns_ip = trimspace(var.ad_dns_ips[0])
 }
 
 # Importing the SG
@@ -82,12 +87,10 @@ resource "aws_ssm_association" "managed_ad_domain_join" {
     values = [aws_instance.CentOS8-AMD.id]
   }
 
-  # Each value must match a single IPv4. Comma-join was rejected ("a,b" fails the IPv4 regex).
-  # AWS CreateAssociation expects dnsIpAddresses as multiple ParameterValues — use a Terraform list.
   parameters = {
     directoryId    = var.ad_directory_id
     directoryName  = var.ad_domain
-    dnsIpAddresses = var.ad_dns_ips
+    dnsIpAddresses = local.ad_ssm_join_dns_ip
   }
 }
 
