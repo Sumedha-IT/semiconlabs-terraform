@@ -1,0 +1,322 @@
+#!/bin/bash
+set -euo pipefail
+
+LOG=/var/log/lab-bootstrap.log
+exec > >(tee -a "$LOG") 2>&1
+
+lab_log() {
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-bootstrap] $*"
+}
+
+lab_log "log file=$LOG (see also journalctl -u cloud-final)"
+echo "========== LAB BOOTSTRAP START =========="
+
+REGION="${aws_region}"
+IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
+INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+  "http://169.254.169.254/latest/meta-data/instance-id" || hostname)
+
+lab_log "start instance_id=$INSTANCE_ID enable_ad_join=${enable_ad_join} ad_mechanism=${ad_join_mechanism} dcv_console=${dcv_use_console_sessions}"
+
+# After AD join: nsswitch + mkhomedir + SSSD tune + restarts (Idempotent).
+lab_finalize_sssd_for_dcv() {
+  lab_log "finalize_sssd_for_dcv: chronyc makestep"
+  chronyc makestep 2>/dev/null || true
+  DOM='${lower_ad_domain}'
+  SH='${ad_sssd_default_shell}'
+  if [ -f /etc/sssd/sssd.conf ] && grep -Fq "[domain/$${DOM}]" /etc/sssd/sssd.conf 2>/dev/null && ! grep -q '^default_shell' /etc/sssd/sssd.conf 2>/dev/null; then
+    lab_log "finalize_sssd_for_dcv: inserting default_shell=$${SH} under [domain/$${DOM}]"
+    awk -v dom="[domain/$${DOM}]" -v line="default_shell = $${SH}" '$0 == dom { print; print line; next } { print }' /etc/sssd/sssd.conf > /tmp/sssd.lab.$$ \
+      && mv /tmp/sssd.lab.$$ /etc/sssd/sssd.conf || rm -f /tmp/sssd.lab.$$
+    chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
+  else
+    lab_log "finalize_sssd_for_dcv: skip default_shell (already set or no domain section)"
+  fi
+  if command -v authselect >/dev/null 2>&1; then
+    lab_log "finalize_sssd_for_dcv: authselect sssd with-mkhomedir"
+    authselect select sssd with-mkhomedir --force || true
+  elif command -v authconfig >/dev/null 2>&1; then
+    lab_log "finalize_sssd_for_dcv: authconfig mkhomedir"
+    authconfig --update --enablemkhomedir || true
+  fi
+  lab_log "finalize_sssd_for_dcv: oddjob + sss_cache + sssd restart"
+  systemctl enable oddjobd 2>/dev/null || systemctl enable oddjob 2>/dev/null || true
+  systemctl restart oddjobd 2>/dev/null || systemctl restart oddjob 2>/dev/null || true
+  sss_cache -E 2>/dev/null || true
+  systemctl enable sssd || true
+  systemctl restart sssd || true
+  lab_log "finalize_sssd_for_dcv: done (sssd oddjob ready for DCV pam_sss)"
+}
+
+# CRITICAL: Remove EFS from fstab to prevent boot hangs
+sed -i '/efs/d' /etc/fstab || true
+sed -i '/fs-0985e64c096c42f09/d' /etc/fstab || true
+
+# Wait for cloud-init
+cloud-init status --wait || true
+
+# SSH
+systemctl enable sshd
+systemctl restart sshd
+
+# Mount EFS (non-blocking)
+mkdir -p /efs
+mount -t nfs4 -o nfsvers=4.1,_netdev \
+  fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com:/ /efs || \
+  echo "EFS mount failed (non-fatal)"
+
+%{ if enable_ad_join ~}
+lab_log "AD phase: mechanism=${ad_join_mechanism} domain=${ad_domain}"
+
+# Unique hostname => unique computer name in the directory (do not bake join into golden AMI).
+HOSTNAME_SAFE="lab-${suffix}-$${INSTANCE_ID}"
+hostnamectl set-hostname "$${HOSTNAME_SAFE}" 2>/dev/null || hostname "$${HOSTNAME_SAFE}"
+if ! grep -qF "$${HOSTNAME_SAFE}" /etc/hosts; then
+  echo "127.0.1.1 $${HOSTNAME_SAFE}" >> /etc/hosts
+fi
+lab_log "hostname set=$${HOSTNAME_SAFE}"
+
+if command -v chronyd >/dev/null 2>&1; then
+  systemctl enable chronyd || true
+  systemctl restart chronyd || true
+fi
+
+%{ if length(ad_dns_ips) > 0 ~}
+DNS_LIST="${join(" ", ad_dns_ips)}"
+if command -v nmcli >/dev/null 2>&1; then
+  DEV=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
+  if [ -n "$${DEV}" ]; then
+    nmcli dev modify "$${DEV}" ipv4.dns "$${DNS_LIST}" || true
+    nmcli dev modify "$${DEV}" ipv4.ignore-auto-dns yes || true
+  fi
+fi
+%{ endif ~}
+
+lab_log "install/check AD client packages (dnf|yum)"
+# Golden AMI should include these; reinstall is safe for missing deps (ldap/clients, tools).
+if command -v dnf >/dev/null 2>&1; then
+  dnf install -y realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
+    krb5-workstation samba-common-tools openldap-clients awscli || true
+elif command -v yum >/dev/null 2>&1; then
+  yum install -y realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
+    krb5-workstation samba-common-tools openldap-clients awscli || true
+fi
+lab_log "AD client packages step finished"
+
+%{ if ad_join_mechanism == "realm_userdata" ~}
+JOIN_PW=""
+%{ if ad_join_password_secretsmanager_secret_id != "" ~}
+JOIN_PW=$(aws secretsmanager get-secret-value \
+  --region "$${REGION}" \
+  --secret-id '${ad_join_password_secretsmanager_secret_id}' \
+  --query SecretString \
+  --output text 2>/dev/null || true)
+if command -v jq >/dev/null 2>&1 && [ -n "$${JOIN_PW}" ] && printf '%s' "$${JOIN_PW}" | jq -e . >/dev/null 2>&1; then
+  PW_RAW_SM="$${JOIN_PW}"
+  JOIN_PW=$(printf '%s' "$${PW_RAW_SM}" | jq -r '.password // empty' || true)
+  [ -z "$${JOIN_PW}" ] && JOIN_PW="$${PW_RAW_SM}"
+fi
+%{ else ~}
+JOIN_PW=$(aws ssm get-parameter \
+  --region "$${REGION}" \
+  --name "${ad_join_password_ssm_parameter_name}" \
+  --with-decryption \
+  --query Parameter.Value \
+  --output text 2>/dev/null || true)
+%{ endif ~}
+if [ -z "$${JOIN_PW}" ] || [ "$${JOIN_PW}" = "None" ]; then
+%{ if ad_join_password_secretsmanager_secret_id != "" ~}
+  echo "ERROR: Could not read AD join password from Secrets Manager '${ad_join_password_secretsmanager_secret_id}'. Check IAM (secretsmanager:GetSecretValue) + secret format (plain text or JSON {\"password\":\"...\"})." >&2
+%{ else ~}
+  echo "ERROR: Could not read AD join password from SSM parameter '${ad_join_password_ssm_parameter_name}'. Check IAM (ssm:GetParameter) + parameter path." >&2
+%{ endif ~}
+else
+%{ if length(ad_dns_ips) > 0 ~}
+  {
+    echo "[libdefaults]"
+    echo "default_realm = ${ad_domain}"
+    echo "dns_lookup_realm = true"
+    echo "dns_lookup_kdc = true"
+    echo "rdns = false"
+    echo ""
+    echo "[realms]"
+    echo " ${ad_domain} = {"
+%{ for idx, ip in ad_dns_ips ~}
+    echo "  kdc = ${ip}"
+%{ endfor ~}
+    echo "  admin_server = ${ad_dns_ips[0]}"
+    echo " }"
+    echo ""
+    echo "[domain_realm]"
+    echo " .${lower_ad_domain} = ${ad_domain}"
+    echo " ${lower_ad_domain} = ${ad_domain}"
+  } > /etc/krb5.conf
+%{ endif ~}
+
+  retry() {
+    local max_attempts="$${1}"
+    shift
+    local attempt=1
+    until "$@"; do
+      if [ "$${attempt}" -ge "$${max_attempts}" ]; then
+        return 1
+      fi
+      attempt=$((attempt + 1))
+      sleep 15
+    done
+  }
+
+  do_realm_join() {
+%{ if ad_computer_ou != "" ~}
+    echo "$${JOIN_PW}" | realm join "${lower_ad_domain}" \
+      -U "${ad_join_user}" \
+      --computer-ou='${ad_computer_ou}' 2>&1
+%{ else ~}
+    echo "$${JOIN_PW}" | realm join "${lower_ad_domain}" \
+      -U "${ad_join_user}" 2>&1
+%{ endif ~}
+  }
+
+  if retry 5 do_realm_join; then
+    lab_log "realm_userdata: domain join succeeded"
+    lab_finalize_sssd_for_dcv
+  else
+    lab_log "ERROR realm_userdata: domain join failed after retries" >&2
+  fi
+  unset JOIN_PW
+fi
+%{ else ~}
+lab_log "ssm_aws_managed: waiting up to ${ad_ssm_join_wait_max_sec}s for AWS-JoinDirectoryServiceDomain (check SSM Fleet)"
+chronyc makestep 2>/dev/null || true
+JOIN_DEADLINE=$(($(date +%s) + ${ad_ssm_join_wait_max_sec}))
+JOINED=0
+WAIT_ITER=0
+while [ "$(date +%s)" -lt "$${JOIN_DEADLINE}" ]; do
+  WAIT_ITER=$((WAIT_ITER + 1))
+  if [ $((WAIT_ITER % 4)) -eq 0 ]; then
+    lab_log "ssm join poll iteration=$WAIT_ITER (realm/sssd checks)"
+  fi
+  if command -v realm >/dev/null 2>&1 && realm list 2>/dev/null | grep -qi '${lower_ad_domain}'; then
+    lab_log "detected realm list contains domain ${lower_ad_domain}"
+    JOINED=1
+    break
+  fi
+  if [ -f /etc/sssd/sssd.conf ] && grep -qE '^id_provider[[:space:]]*=[[:space:]]*ad' /etc/sssd/sssd.conf 2>/dev/null; then
+    lab_log "detected sssd id_provider=ad"
+    JOINED=1
+    break
+  fi
+  sleep 15
+done
+if [ "$${JOINED}" != "1" ]; then
+  lab_log "WARN join not confirmed in window; finalize still runs — verify SSM association AWS-JoinDirectoryServiceDomain"
+fi
+lab_finalize_sssd_for_dcv
+%{ endif ~}
+
+# DCV must stack unix + pam_sss (golden AMI should already ship this; restore if missing/corrupt).
+if [ ! -f /etc/pam.d/dcv ] || ! grep -q pam_sss.so /etc/pam.d/dcv 2>/dev/null; then
+  lab_log "writing /etc/pam.d/dcv (pam_unix + pam_sss + mkhomedir)"
+  cat >/etc/pam.d/dcv <<'PAMDCV'
+#%PAM-1.0
+auth required pam_env.so
+auth sufficient pam_unix.so nullok
+auth sufficient pam_sss.so forward_pass
+auth required pam_deny.so
+account sufficient pam_unix.so
+account sufficient pam_sss.so
+account required pam_permit.so
+password requisite pam_pwquality.so local_users_only
+password sufficient pam_unix.so sha512 shadow nullok use_authtok
+password sufficient pam_sss.so use_authtok
+password required pam_deny.so
+session optional pam_keyinit.so revoke
+session required pam_limits.so
+-session optional pam_systemd.so
+session optional pam_oddjob_mkhomedir.so umask=0077
+session [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+session required pam_unix.so
+session optional pam_sss.so
+PAMDCV
+  lab_log "/etc/pam.d/dcv installed"
+fi
+
+lab_log "AD phase finished"
+%{ endif ~}
+
+lab_log "DCV: writing dcv.conf console=${dcv_use_console_sessions} web_all=${dcv_web_listen_all}"
+# DCV base config (connectivity appended below if enabled).
+systemctl enable dcvserver
+systemctl restart dcvserver || true
+
+%{ if dcv_use_console_sessions ~}
+cat >/etc/dcv/dcv.conf <<'DCVBASE'
+[security]
+authentication="system"
+pam-service-name="dcv"
+
+[session-management]
+create-session = true
+
+[session-management/automatic-console-session]
+owner = "%user%"
+enable = true
+
+[clipboard]
+enable=false
+
+[log]
+log-level=debug
+
+DCVBASE
+%{ else ~}
+cat >/etc/dcv/dcv.conf <<'DCVBASE'
+[security]
+authentication="system"
+pam-service-name="dcv"
+
+[session-management]
+create-session = false
+
+[session-management/automatic-console-session]
+owner = "%user%"
+enable = false
+
+[clipboard]
+enable=false
+
+[log]
+log-level=debug
+
+DCVBASE
+%{ endif ~}
+
+cat >>/etc/dcv/dcv.conf <<EOF
+[connectivity]
+%{ if dcv_web_listen_all ~}
+web-listen-endpoints=['0.0.0.0:8443']
+enable-quic-frontend=false
+%{ endif ~}
+idle-timeout=0
+EOF
+
+systemctl restart dcvserver || true
+lab_log "DCV service restarted post-config"
+
+%{ if !dcv_use_console_sessions ~}
+sleep 2
+sudo dcv close-session console 2>/dev/null || true
+%{ endif ~}
+
+systemctl enable sssd || true
+systemctl restart sssd || true
+lab_log "final sssd restart before READY tag"
+
+aws ec2 create-tags \
+  --region ${aws_region} \
+  --resources "$${INSTANCE_ID}" \
+  --tags Key=LabBootstrap,Value=READY
+
+lab_log "BOOTSTRAP COMPLETE — verify AD: realm list; DCV: ss -tlnp | grep 8443; log=$LOG"
+echo "========== BOOTSTRAP COMPLETE =========="

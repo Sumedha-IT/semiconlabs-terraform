@@ -2,6 +2,10 @@ provider "aws" {
   region = "ap-south-1"
 }
 
+locals {
+  lower_ad_domain = lower(var.ad_domain)
+}
+
 # Importing the SG
 data "aws_security_group" "TerraformSecurityGroup" {
   id = "sg-04430765f75fb1634"
@@ -42,88 +46,46 @@ resource "aws_instance" "CentOS8-AMD" {
   }
 
 
-  user_data = <<-EOF
-
-#!/bin/bash
-set -euo pipefail
-
-LOG=/var/log/lab-bootstrap.log
-exec > >(tee -a $LOG) 2>&1
-
-echo "========== LAB BOOTSTRAP START =========="
-
-# CRITICAL: Remove EFS from fstab to prevent boot hangs
-sed -i '/efs/d' /etc/fstab
-sed -i '/fs-0985e64c096c42f09/d' /etc/fstab
-
-# Wait for cloud-init
-cloud-init status --wait || true
-
-# SSH
-systemctl enable sshd
-systemctl restart sshd
-
-# Mount EFS (non-blocking, will succeed now)
-mkdir -p /efs
-mount -t nfs4 -o nfsvers=4.1,_netdev \
-  fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com:/ /efs || \
-  echo "EFS mount failed (non-fatal)"
-
-# DCV
-systemctl enable dcvserver
-systemctl restart dcvserver || true
-
-# Configure NICE DCV to disable the automatic console session and use
-# virtual sessions managed by the backend.
-cat >/etc/dcv/dcv.conf <<'DCVCONF'
-[security]
-authentication="system"
-pam-service-name="dcv"
-
-[session-management]
-create-session = false
-
-[session-management/automatic-console-session]
-owner = "%user%"
-enable = false
-
-[clipboard]
-enable=false
-
-[log]
-log-level=debug
-
-[connectivity]
-idle-timeout=0
-DCVCONF
-
-systemctl restart dcvserver || true
-
-# Best-effort: close default console session so virtual sessions are not blocked by max-session limit
-sleep 2
-sudo dcv close-session console 2>/dev/null || true
-
-# DCV logout watcher is NOT installed here: bake it into your golden lab AMI once
-# (see golden-ami-dcv-watcher.sh in this repo), then set var.ami_id to that AMI.
-
-# SSSD
-systemctl enable sssd
-systemctl restart sssd || true
-
-# Tag as ready
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-aws ec2 create-tags \
-  --region ap-south-1 \
-  --resources "$INSTANCE_ID" \
-  --tags Key=LabBootstrap,Value=READY
-
-echo "========== BOOTSTRAP COMPLETE =========="
-
-  EOF
+  user_data = templatefile("${path.module}/user-data.sh.tftpl", {
+    aws_region                            = var.aws_region
+    suffix                                = var.suffix
+    enable_ad_join                        = var.enable_ad_join
+    ad_join_mechanism                     = var.ad_join_mechanism
+    ad_domain                             = var.ad_domain
+    lower_ad_domain                       = local.lower_ad_domain
+    ad_join_user                            = var.ad_join_user
+    ad_join_password_ssm_parameter_name   = var.ad_join_password_ssm_parameter_name
+    ad_join_password_secretsmanager_secret_id = var.ad_join_password_secretsmanager_secret_id
+    ad_computer_ou                          = var.ad_computer_ou
+    ad_dns_ips                            = var.ad_dns_ips
+    dcv_use_console_sessions              = var.dcv_use_console_sessions
+    dcv_web_listen_all                    = var.dcv_web_listen_all
+    ad_ssm_join_wait_max_sec              = var.ad_ssm_join_wait_max_sec
+    ad_sssd_default_shell                 = var.ad_sssd_default_shell
+  })
   tags = {
     Name         = "${var.name}-${var.instance_name}-${var.suffix}"
     map-migrated = "DADS45OSDL"
     LabBootstrap = "READY"
+  }
+}
+
+# AWS Managed Microsoft AD: official SSM Automation (no realm join password on the instance).
+resource "aws_ssm_association" "managed_ad_domain_join" {
+  count = var.enable_ad_join && var.ad_join_mechanism == "ssm_aws_managed" ? 1 : 0
+
+  name             = "AWS-JoinDirectoryServiceDomain"
+  association_name = substr("${var.name}-${var.instance_name}-${var.suffix}-ad-join", 0, 128)
+
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.CentOS8-AMD.id]
+  }
+
+  parameters = {
+    directoryId    = var.ad_directory_id
+    directoryName  = var.ad_domain
+    dnsIpAddresses = join(",", var.ad_dns_ips)
   }
 }
 
