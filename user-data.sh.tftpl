@@ -68,22 +68,37 @@ LAB_B64='${lab_ssh_public_key_b64}'
 if command -v base64 >/dev/null 2>&1 && [ -n "$LAB_B64" ]; then
   printf '%s' "$LAB_B64" | base64 -d >/tmp/lab-launch.pub 2>/dev/null || true
   if [ -s /tmp/lab-launch.pub ]; then
-    for U in centos cloud-user ec2-user ssm-user; do
-      if id "$U" &>/dev/null; then
-        H=$(eval echo "~$U")
-        install -d -m 700 -o "$U" -g "$U" "$H/.ssh" 2>/dev/null || mkdir -p "$H/.ssh"
-        chmod 700 "$H/.ssh" 2>/dev/null || true
-        chown "$U:$U" "$H/.ssh" 2>/dev/null || true
-        touch "$H/.ssh/authorized_keys"
-        chmod 600 "$H/.ssh/authorized_keys"
-        chown "$U:$U" "$H/.ssh/authorized_keys"
-        while IFS= read -r line || [ -n "$line" ]; do
-          [ -z "$(echo "$line" | tr -d '[:space:]')" ] && continue
-          grep -qxF "$line" "$H/.ssh/authorized_keys" 2>/dev/null || echo "$line" >>"$H/.ssh/authorized_keys"
-        done </tmp/lab-launch.pub
-        lab_log "lab SSH pubkey appended for $U"
-      fi
+    lab_ssh_append_pub_for_user() {
+      local U="$1"
+      id "$U" &>/dev/null || return 0
+      local H
+      H=$(getent passwd "$U" 2>/dev/null | cut -d: -f6)
+      [ -n "$H" ] && [ -d "$H" ] || return 0
+      install -d -m 700 -o "$U" -g "$U" "$H/.ssh" 2>/dev/null || mkdir -p "$H/.ssh"
+      chmod 700 "$H/.ssh" 2>/dev/null || true
+      chown "$U:$U" "$H/.ssh" 2>/dev/null || true
+      touch "$H/.ssh/authorized_keys"
+      chmod 600 "$H/.ssh/authorized_keys"
+      chown "$U:$U" "$H/.ssh/authorized_keys"
+      while IFS= read -r line || [ -n "$line" ]; do
+        [ -z "$(echo "$line" | tr -d '[:space:]')" ] && continue
+        grep -qxF "$line" "$H/.ssh/authorized_keys" 2>/dev/null || echo "$line" >>"$H/.ssh/authorized_keys"
+      done </tmp/lab-launch.pub
+      lab_log "lab SSH pubkey appended for $U (home=$H)"
+    }
+    # Known cloud / DCV AMIs first (fast path).
+    for U in centos cloud-user ec2-user ssm-user ubuntu admin rocky almalinux fedora; do
+      lab_ssh_append_pub_for_user "$U" || true
     done
+    # Any interactive account with a real home under /home/ (covers custom golden AMIs).
+    if command -v getent >/dev/null 2>&1; then
+      while IFS=: read -r u _ uid _ _ home shell; do
+        [ "${uid:-0}" -ge 1000 ] 2>/dev/null || continue
+        case "$home" in /home/*) ;; *) continue;; esac
+        case "$shell" in *nologin*|*false*|/usr/sbin/nologin|/sbin/nologin|/bin/false) continue;; esac
+        lab_ssh_append_pub_for_user "$u" || true
+      done < <(getent passwd 2>/dev/null || true)
+    fi
     rm -f /tmp/lab-launch.pub
   else
     lab_log "WARN could not decode lab_ssh_public_key_b64"
