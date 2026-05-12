@@ -75,9 +75,18 @@ resource "aws_instance" "CentOS8-AMD" {
   }
 }
 
+# Let amazon-ssm-agent register with Fleet Manager before attaching JoinDirectoryServiceDomain.
+resource "time_sleep" "wait_ssm_registration_after_ec2" {
+  depends_on = [aws_instance.CentOS8-AMD]
+
+  create_duration = var.enable_ad_join && var.ad_join_mechanism == "ssm_aws_managed" ? var.ad_ssm_association_delay : "0s"
+}
+
 # AWS Managed Microsoft AD: official SSM Automation (no realm join password on the instance).
 resource "aws_ssm_association" "managed_ad_domain_join" {
   count = var.enable_ad_join && var.ad_join_mechanism == "ssm_aws_managed" ? 1 : 0
+
+  depends_on = [time_sleep.wait_ssm_registration_after_ec2]
 
   name             = "AWS-JoinDirectoryServiceDomain"
   association_name = substr("${var.name}-${var.instance_name}-${var.suffix}-ad-join", 0, 128)

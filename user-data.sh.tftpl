@@ -104,6 +104,37 @@ elif command -v yum >/dev/null 2>&1; then
 fi
 lab_log "AD client packages step finished"
 
+%{ if ad_join_mechanism == "ssm_aws_managed" ~}
+# JoinDirectoryServiceDomain only runs via SSM once the managed instance reports Online — ensure agent is up early.
+lab_log "ssm_aws_managed: enable/restart amazon-ssm-agent (required before directory join document)"
+systemctl enable amazon-ssm-agent.service 2>/dev/null || systemctl enable amazon-ssm-agent 2>/dev/null || true
+systemctl restart amazon-ssm-agent 2>/dev/null || lab_log "WARN could not restart amazon-ssm-agent (non-fatal)"
+
+lab_log "ssm_aws_managed: wait for Fleet Manager PingStatus Online (association cannot apply until then; max 900s)"
+SSM_ONLINE_DEADLINE=$(( $(date +%s) + 900 ))
+SSM_SEEN_GOOD=""
+while [ "$(date +%s)" -lt "$SSM_ONLINE_DEADLINE" ]; do
+  PST=""
+  if command -v aws >/dev/null 2>&1; then
+    PST=$(aws ssm describe-instance-information \
+      --region "$REGION" \
+      --filters "Key=InstanceIds,Values=$${INSTANCE_ID}" \
+      --query 'InstanceInformationList[0].PingStatus' \
+      --output text 2>/dev/null || true)
+  fi
+  PST=$(echo "$PST" | tr -d '\r\t\n' )
+  lab_log "ssm_aws_managed: SSM PingStatus poll (target Online)"
+  echo "$PST" | grep -qi '^Online$' && SSM_SEEN_GOOD=yes && break
+  sleep 15
+done
+if [ "$SSM_SEEN_GOOD" = "yes" ]; then
+  lab_log "ssm_aws_managed: SSM Online confirmed; settling 45s for State Manager to deliver join document"
+  sleep 45
+else
+  lab_log "WARN ssm_aws_managed: PingStatus Online not observed in 900s — check IAM LabSSMRole (AmazonSSMManagedInstanceCore, AmazonSSMDirectoryServiceAccess); join may fail"
+fi
+%{ endif ~}
+
 %{ if ad_join_mechanism == "realm_userdata" ~}
 JOIN_PW=""
 %{ if ad_join_password_secretsmanager_secret_id != "" ~}

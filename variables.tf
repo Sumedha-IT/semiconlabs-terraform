@@ -176,7 +176,17 @@ variable "dcv_web_listen_all" {
 variable "ad_ssm_join_wait_max_sec" {
   description = "When ad_join_mechanism=ssm_aws_managed, poll up to this many seconds for join (SSM Automation runs after boot)."
   type        = number
-  default     = 900
+  default     = 2700
+}
+
+variable "ad_ssm_association_delay" {
+  description = <<-EOT
+    After EC2 enters running state, pause before attaching the SSM association
+    AWS-JoinDirectoryServiceDomain. Association creation before amazon-ssm-agent registers with Fleet
+    Manager often results in join never reaching the instance (empty realm list, sssd domains=).
+    EOT
+  type        = string
+  default     = "180s"
 }
 
 variable "ad_sssd_default_shell" {
