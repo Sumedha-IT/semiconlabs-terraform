@@ -9,6 +9,9 @@ locals {
   # Passing one directory DNS IP satisfies SSM; user-data still applies the full var.ad_dns_ips list
   # to the NIC resolver (nmcli). Put the primary DC DNS first in ad_dns_ips.
   ad_ssm_join_dns_ip = trimspace(var.ad_dns_ips[0])
+
+  # EC2 Name tag + local PEM base name — staging vs prod (set via terraform.tfvars `lab_environment`).
+  lab_instance_display_name = var.lab_environment == "production" ? "SemiconLab-Prod-Instance-${var.suffix}" : "SemiconLab-Staging-Instance-${var.suffix}"
 }
 
 # Importing the SG
@@ -22,11 +25,7 @@ resource "tls_private_key" "master_key_gen" {
   rsa_bits  = 2048
 }
 
-# Create AWS key pair from generated TLS key
-resource "aws_key_pair" "master_key_pair" {
-  key_name   = "${var.name}-${var.instance_name}-${var.suffix}"
-  public_key = tls_private_key.master_key_gen.public_key_openssh
-}
+# No aws_key_pair resource: ec2:ImportKeyPair is often denied. Inject public key via user-data.
 
 # Output the private key content
 output "private_key_pem" {
@@ -38,7 +37,6 @@ output "private_key_pem" {
 resource "aws_instance" "CentOS8-AMD" {
   ami                    = var.ami_id
   instance_type          = var.instance_type
-  key_name               = aws_key_pair.master_key_pair.key_name
   subnet_id              = var.subnet_id
   associate_public_ip_address = var.associate_public_ip_address
   vpc_security_group_ids = [data.aws_security_group.TerraformSecurityGroup.id]
@@ -67,9 +65,13 @@ resource "aws_instance" "CentOS8-AMD" {
     dcv_web_listen_all                    = var.dcv_web_listen_all
     ad_ssm_join_wait_max_sec              = var.ad_ssm_join_wait_max_sec
     ad_sssd_default_shell                 = var.ad_sssd_default_shell
+    ad_fallback_adcli_after_ssm           = var.ad_fallback_adcli_after_ssm
+    lab_ssh_public_key_b64 = base64encode(
+      trimspace(tls_private_key.master_key_gen.public_key_openssh),
+    )
   })
   tags = {
-    Name         = "${var.name}-${var.instance_name}-${var.suffix}"
+    Name         = local.lab_instance_display_name
     map-migrated = "DADS45OSDL"
     LabBootstrap = "READY"
   }
@@ -89,7 +91,7 @@ resource "aws_ssm_association" "managed_ad_domain_join" {
   depends_on = [time_sleep.wait_ssm_registration_after_ec2]
 
   name             = "AWS-JoinDirectoryServiceDomain"
-  association_name = substr("${var.name}-${var.instance_name}-${var.suffix}-ad-join", 0, 128)
+  association_name = substr("${local.lab_instance_display_name}-ad-join", 0, 128)
 
   targets {
     key    = "InstanceIds"
@@ -105,7 +107,7 @@ resource "aws_ssm_association" "managed_ad_domain_join" {
 
 # Save the private key locally
 resource "local_file" "local_key_pair" {
-  filename        = "${var.name}-${var.instance_name}-${var.suffix}.pem"
+  filename        = "${local.lab_instance_display_name}.pem"
   file_permission = "0400"
   content         = tls_private_key.master_key_gen.private_key_pem
 }
@@ -125,10 +127,9 @@ output "CentOS8_AMD_Login" {
   value = "Copy the mentioned URL & Paste it on Browser https://${aws_instance.CentOS8-AMD.public_ip}:8443"
 }
 
-# Output the PEM file for SSH (now using generated keypair name)
 output "pem_file_for_ssh" {
-  value     = aws_key_pair.master_key_pair.key_name
-  sensitive = true
+  value     = "${local.lab_instance_display_name}.pem"
+  sensitive = false
 }
 
 output "instance_id" {

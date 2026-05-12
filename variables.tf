@@ -67,6 +67,18 @@ variable "suffix" {
   # default = "Koushal-Manual_"
 }
 
+# Lab fleet: staging vs production (controls EC2 Name tag + PEM file prefix in main.tf locals).
+variable "lab_environment" {
+  description = "staging | production — Name tag SemiconLab-Staging-Instance-<suffix> or SemiconLab-Prod-Instance-<suffix>"
+  type        = string
+  default     = "staging"
+
+  validation {
+    condition     = contains(["staging", "production"], var.lab_environment)
+    error_message = "lab_environment must be staging or production."
+  }
+}
+
 variable "aws_region" {
   description = "Region for aws CLI in user-data (tags, SSM). Matches Semiconlabs-backend .env AWS_REGION."
   type        = string
@@ -110,9 +122,15 @@ variable "enable_ad_join" {
       (var.ad_join_mechanism == "ssm_aws_managed" &&
         var.ad_directory_id != "" &&
         var.ad_domain != "" &&
-        length(var.ad_dns_ips) > 0)
+        length(var.ad_dns_ips) > 0 &&
+        (
+          !var.ad_fallback_adcli_after_ssm ||
+          (var.ad_join_user != "" &&
+            (var.ad_join_password_secretsmanager_secret_id != "" ||
+              var.ad_join_password_ssm_parameter_name != ""))
+        ))
     )
-    error_message = "When enable_ad_join=true: ssm_aws_managed needs ad_directory_id, ad_domain, ad_dns_ips (no join password in Terraform). realm_userdata needs ad_join_user plus either ad_join_password_secretsmanager_secret_id or ad_join_password_ssm_parameter_name."
+    error_message = "When enable_ad_join=true: realm_userdata needs ad_join_user + password (Secrets Manager id or SSM parameter). ssm_aws_managed needs ad_directory_id + ad_domain + ad_dns_ips; if ad_fallback_adcli_after_ssm=true also set ad_join_user + password source."
   }
 }
 
@@ -123,7 +141,10 @@ variable "ad_domain" {
 }
 
 variable "ad_join_user" {
-  description = "Only for ad_join_mechanism=realm_userdata: dedicated join UPN (e.g. svc-lab-join@sumedhalabs.com). Ignored for ssm_aws_managed."
+  description = <<-EOT
+    Join account UPN/sAM-compatible form (e.g. admin@sumedhalabs.com). Required when ad_join_mechanism=realm_userdata,
+    or when ssm_aws_managed + ad_fallback_adcli_after_ssm=true (fallback uses sAM portion before '@' as adcli -U).
+    EOT
   type        = string
   default     = ""
 }
@@ -187,6 +208,16 @@ variable "ad_ssm_association_delay" {
     EOT
   type        = string
   default     = "180s"
+}
+
+variable "ad_fallback_adcli_after_ssm" {
+  description = <<-EOT
+    When true and ad_join_mechanism=ssm_aws_managed: if realm/sssd never show an AD domain after AWS-JoinDirectoryServiceDomain,
+    run adcli join (manual path from CloudLabs DCV guide) using ad_join_user + SSM/Secrets credentials.
+    Requires instance IAM permission to read the secret or parameter (e.g. LabSSMRole + kms decrypt).
+    EOT
+  type        = bool
+  default     = false
 }
 
 variable "ad_sssd_default_shell" {

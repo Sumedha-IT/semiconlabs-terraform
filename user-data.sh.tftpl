@@ -60,6 +60,36 @@ cloud-init status --wait || true
 systemctl enable sshd
 systemctl restart sshd
 
+# Install lab TLS public key without EC2 ImportKeyPair (IAM: ec2:ImportKeyPair often denied).
+lab_log "install lab SSH pubkey from Terraform (base64 payload; no aws_key_pair)"
+LAB_B64='${lab_ssh_public_key_b64}'
+if command -v base64 >/dev/null 2>&1 && [ -n "$LAB_B64" ]; then
+  printf '%s' "$LAB_B64" | base64 -d >/tmp/lab-launch.pub 2>/dev/null || true
+  if [ -s /tmp/lab-launch.pub ]; then
+    for U in cloud-user ec2-user; do
+      if id "$U" &>/dev/null; then
+        H=$(eval echo "~$U")
+        install -d -m 700 -o "$U" -g "$U" "$H/.ssh" 2>/dev/null || mkdir -p "$H/.ssh"
+        chmod 700 "$H/.ssh" 2>/dev/null || true
+        chown "$U:$U" "$H/.ssh" 2>/dev/null || true
+        touch "$H/.ssh/authorized_keys"
+        chmod 600 "$H/.ssh/authorized_keys"
+        chown "$U:$U" "$H/.ssh/authorized_keys"
+        while IFS= read -r line || [ -n "$line" ]; do
+          [ -z "$(echo "$line" | tr -d '[:space:]')" ] && continue
+          grep -qxF "$line" "$H/.ssh/authorized_keys" 2>/dev/null || echo "$line" >>"$H/.ssh/authorized_keys"
+        done </tmp/lab-launch.pub
+        lab_log "lab SSH pubkey appended for $U"
+      fi
+    done
+    rm -f /tmp/lab-launch.pub
+  else
+    lab_log "WARN could not decode lab_ssh_public_key_b64"
+  fi
+else
+  lab_log "WARN base64 missing or empty lab_ssh_public_key_b64 — SSH PEM may not work until keys added"
+fi
+
 # Mount EFS (non-blocking)
 mkdir -p /efs
 mount -t nfs4 -o nfsvers=4.1,_netdev \
@@ -241,7 +271,54 @@ while [ "$(date +%s)" -lt "$${JOIN_DEADLINE}" ]; do
   sleep 15
 done
 if [ "$${JOINED}" != "1" ]; then
-  lab_log "WARN join not confirmed in window; finalize still runs — verify SSM association AWS-JoinDirectoryServiceDomain"
+  lab_log "WARN join not confirmed in window; verify SSM association AWS-JoinDirectoryServiceDomain (+ IAM LabSSMRole AmazonSSMDirectoryServiceAccess)"
+%{ if ad_fallback_adcli_after_ssm ~}
+  JOIN_PW_FB=""
+%{ if ad_join_password_secretsmanager_secret_id != "" ~}
+  JOIN_PW_FB=$(aws secretsmanager get-secret-value \
+    --region "$${REGION}" \
+    --secret-id '${ad_join_password_secretsmanager_secret_id}' \
+    --query SecretString \
+    --output text 2>/dev/null || true)
+  if command -v jq >/dev/null 2>&1 && [ -n "$${JOIN_PW_FB}" ] && printf '%s' "$${JOIN_PW_FB}" | jq -e . >/dev/null 2>&1; then
+    PW_RAW_SM_FB="$${JOIN_PW_FB}"
+    JOIN_PW_FB=$(printf '%s' "$${PW_RAW_SM_FB}" | jq -r '.password // empty' || true)
+    [ -z "$${JOIN_PW_FB}" ] && JOIN_PW_FB="$${PW_RAW_SM_FB}"
+  fi
+%{ else ~}
+  JOIN_PW_FB=$(aws ssm get-parameter \
+    --region "$${REGION}" \
+    --name "${ad_join_password_ssm_parameter_name}" \
+    --with-decryption \
+    --query Parameter.Value \
+    --output text 2>/dev/null || true)
+%{ endif ~}
+  AD_JOIN_ESC=${jsonencode(ad_join_user)}
+  if [ -n "$${JOIN_PW_FB}" ] && [ "$${JOIN_PW_FB}" != "None" ] && [ -n "$${AD_JOIN_ESC}" ] && [ "$${AD_JOIN_ESC}" != '""' ]; then
+    UPNS=$(printf '%s\n' "$${AD_JOIN_ESC}" | sed -e 's/^"//' -e 's/"$$//')
+    ADCLI_SAM="$${UPNS%%@*}"
+    if [ -z "$${ADCLI_SAM}" ]; then
+      lab_log "WARN ad_fallback_adcli: empty SAM from ad_join_user (check tfvars ad_join_user)"
+    else
+      lab_log "ad_fallback_adcli: attempting adcli join (DCV guide path) domain=${ad_domain} sam=$${ADCLI_SAM}"
+      chronyc makestep 2>/dev/null || true
+      FB_ATT=1
+      while [ "$${FB_ATT}" -le 3 ]; do
+        if printf '%s' "$${JOIN_PW_FB}" | adcli join -v '${ad_domain}' -U "$${ADCLI_SAM}" --stdin-password; then
+          lab_log "ad_fallback_adcli: adcli join succeeded (attempt=$${FB_ATT})"
+          JOINED=1
+          break
+        fi
+        lab_log "WARN ad_fallback_adcli: adcli join attempt $${FB_ATT} failed — retry in 60s"
+        FB_ATT=$((FB_ATT + 1))
+        sleep 60
+      done
+    fi
+  else
+    lab_log "WARN ad_fallback_adcli: skipping (missing join password via SSM/Secrets or empty ad_join_user)"
+  fi
+  unset JOIN_PW_FB
+%{ endif ~}
 fi
 lab_finalize_sssd_for_dcv
 %{ endif ~}
