@@ -93,7 +93,7 @@ if command -v base64 >/dev/null 2>&1 && [ -n "$LAB_B64" ]; then
     # Any interactive account with a real home under /home/ (covers custom golden AMIs).
     if command -v getent >/dev/null 2>&1; then
       while IFS=: read -r u _ uid _ _ home shell; do
-        [ "${uid:-0}" -ge 1000 ] 2>/dev/null || continue
+        [ "$${uid:-0}" -ge 1000 ] 2>/dev/null || continue
         case "$home" in /home/*) ;; *) continue;; esac
         case "$shell" in *nologin*|*false*|/usr/sbin/nologin|/sbin/nologin|/bin/false) continue;; esac
         lab_ssh_append_pub_for_user "$u" || true
