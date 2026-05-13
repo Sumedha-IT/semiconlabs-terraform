@@ -283,8 +283,12 @@ while [ "$(date +%s)" -lt "$SSM_ONLINE_DEADLINE" ]; do
   sleep 10
 done
 if [ "$SSM_SEEN_GOOD" = "yes" ]; then
-  lab_log "ssm_aws_managed: agent locally healthy; settling 30s for State Manager to deliver join document"
-  sleep 30
+  # IMPORTANT: Terraform creates `aws_ssm_association` only AFTER
+  # `time_sleep.wait_ssm_registration_after_ec2` (same duration as this var).
+  # A short sleep here made user-data poll for realm while NO association existed
+  # yet (~2 minute blind window vs 180s TF delay → empty realm_list on lab 137).
+  lab_log "ssm_aws_managed: agent locally healthy; settling ${ad_ssm_association_delay} (matches Terraform association delay, then polling for join)"
+  sleep ${ad_ssm_association_delay}
 else
   lab_log "WARN ssm_aws_managed: agent local readiness markers not seen in 300s — proceeding (State Manager may still deliver join document)"
 fi

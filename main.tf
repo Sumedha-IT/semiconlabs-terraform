@@ -64,6 +64,9 @@ resource "aws_instance" "CentOS8-AMD" {
     dcv_use_console_sessions              = var.dcv_use_console_sessions
     dcv_web_listen_all                    = var.dcv_web_listen_all
     ad_ssm_join_wait_max_sec              = var.ad_ssm_join_wait_max_sec
+    # Must match time_sleep.wait_ssm_registration_after_ec2 duration: user-data
+    # must not poll for realm BEFORE aws_ssm_association exists (Race on lab 137).
+    ad_ssm_association_delay              = var.ad_ssm_association_delay
     ad_sssd_default_shell                 = var.ad_sssd_default_shell
     ad_fallback_adcli_after_ssm           = var.ad_fallback_adcli_after_ssm
     lab_ssh_public_key_b64 = base64encode(
