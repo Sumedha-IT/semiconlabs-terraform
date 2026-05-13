@@ -21,7 +21,29 @@ IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
 INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
   "http://169.254.169.254/latest/meta-data/instance-id" || hostname)
 
+# Pin AWS region for CLI and for SSM document workers (AWS-JoinDirectoryServiceDomain runs
+# `aws ds …` on the instance). If AWS_DEFAULT_REGION is unset, boto3/awscli default to
+# us-east-1, DescribeDirectories returns empty, and the document fails with:
+#   "Cannot find parent directory Id"
+# even when LabSSMRole has AmazonSSMDirectoryServiceAccess (ap-south-1 directory).
+export AWS_DEFAULT_REGION="$REGION"
+export AWS_REGION="$REGION"
+if ! grep -q '^AWS_DEFAULT_REGION=' /etc/environment 2>/dev/null; then
+  echo "AWS_DEFAULT_REGION=$REGION" >>/etc/environment
+fi
+if ! grep -q '^AWS_REGION=' /etc/environment 2>/dev/null; then
+  echo "AWS_REGION=$REGION" >>/etc/environment
+fi
+install -d /etc/systemd/system/amazon-ssm-agent.service.d
+cat >/etc/systemd/system/amazon-ssm-agent.service.d/99-lab-aws-region.conf <<SSMENV
+[Service]
+Environment=AWS_DEFAULT_REGION=$REGION
+Environment=AWS_REGION=$REGION
+SSMENV
+systemctl daemon-reload 2>/dev/null || true
+
 lab_log "start instance_id=$INSTANCE_ID enable_ad_join=${enable_ad_join} ad_mechanism=${ad_join_mechanism} dcv_console=${dcv_use_console_sessions}"
+lab_log "instance AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION (required for SSM domain-join document)"
 
 # After AD join: nsswitch + mkhomedir + SSSD tune + restarts (Idempotent).
 lab_finalize_sssd_for_dcv() {
