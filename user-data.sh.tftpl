@@ -224,19 +224,17 @@ systemctl restart amazon-ssm-agent 2>/dev/null || lab_log "WARN could not restar
 # successfully exchanged credentials with AWS, the managed instance will be
 # reported Online to Fleet Manager and the association will deliver.
 lab_log "ssm_aws_managed: wait for amazon-ssm-agent local readiness (no AWS API needed)"
-SSM_ONLINE_DEADLINE=$(( $(date +%s) + 900 ))
+SSM_ONLINE_DEADLINE=$(( $(date +%s) + 300 ))
 SSM_SEEN_GOOD=""
+# Readiness signals that work for EC2 instance-role identity (no
+# /var/lib/amazon/ssm/Vault/Store/RegistrationKey — that file is only
+# created for on-prem / hybrid activation). We look at journalctl AND the
+# on-disk log so the check still works on AMIs where journald is locked
+# down for our UID.
 ssm_agent_local_online() {
   systemctl is-active --quiet amazon-ssm-agent 2>/dev/null || return 1
-  # Agent writes a registration key once `EC2 registration was successful`.
-  [ -s /var/lib/amazon/ssm/Vault/Store/RegistrationKey ] || return 1
-  # And it logs that creds are ready right after.
-  journalctl -u amazon-ssm-agent --since "10 min ago" --no-pager 2>/dev/null \
-    | grep -qE "Credentials ready|EC2 registration was successful" \
-    && return 0
-  # Fallback: tail the agent log directly if journalctl is restricted.
-  tail -n 200 /var/log/amazon/ssm/amazon-ssm-agent.log 2>/dev/null \
-    | grep -qE "Credentials ready|EC2 registration was successful" \
+  { journalctl -u amazon-ssm-agent --no-pager 2>/dev/null; tail -n 500 /var/log/amazon/ssm/amazon-ssm-agent.log 2>/dev/null; } \
+    | grep -qE "Credentials ready|EC2 registration was successful|Registration info found for ec2 instance|HealthCheck reporting agent health" \
     && return 0
   return 1
 }
@@ -245,14 +243,14 @@ while [ "$(date +%s)" -lt "$SSM_ONLINE_DEADLINE" ]; do
     SSM_SEEN_GOOD=yes
     break
   fi
-  lab_log "ssm_aws_managed: amazon-ssm-agent not locally ready yet (active=$(systemctl is-active amazon-ssm-agent 2>/dev/null), reg=$([ -s /var/lib/amazon/ssm/Vault/Store/RegistrationKey ] && echo yes || echo no))"
+  lab_log "ssm_aws_managed: amazon-ssm-agent not locally ready yet (active=$(systemctl is-active amazon-ssm-agent 2>/dev/null))"
   sleep 10
 done
 if [ "$SSM_SEEN_GOOD" = "yes" ]; then
   lab_log "ssm_aws_managed: agent locally healthy; settling 30s for State Manager to deliver join document"
   sleep 30
 else
-  lab_log "WARN ssm_aws_managed: amazon-ssm-agent never reached local readiness in 900s — check journalctl -u amazon-ssm-agent and instance egress to ssm/ssmmessages.${aws_region}.amazonaws.com"
+  lab_log "WARN ssm_aws_managed: agent local readiness markers not seen in 300s — proceeding (State Manager may still deliver join document)"
 fi
 %{ endif ~}
 
