@@ -94,11 +94,12 @@ variable "ad_directory_id" {
 
 variable "ad_join_mechanism" {
   description = <<-EOT
-    ssm_aws_managed — recommended for AWS Managed Microsoft AD: Terraform creates aws_ssm_association with document AWS-JoinDirectoryServiceDomain (no join password on the instance).
-    realm_userdata — use realm join in user-data; requires ad_join_user + SSM parameter for that account's password.
+    ssm_aws_managed — Terraform creates aws_ssm_association with document AWS-JoinDirectoryServiceDomain (no join password on the instance). Can fail when the document's AWS CLI resolves the wrong region on the guest.
+    realm_userdata — Direct domain join in user-data (lab-docs DCV-Setup-On-EC2-Guide style: password from SSM or Secrets Manager on the instance, then realm join). Default in this repo is realm_userdata so labs work without the managed SSM document.
+    Override per environment in terraform.tfvars or via backend env LAB_AD_JOIN_MECHANISM / AD_JOIN_MECHANISM.
   EOT
   type        = string
-  default     = "ssm_aws_managed"
+  default     = "realm_userdata"
 
   validation {
     condition     = contains(["ssm_aws_managed", "realm_userdata"], var.ad_join_mechanism)
@@ -142,11 +143,12 @@ variable "ad_domain" {
 
 variable "ad_join_user" {
   description = <<-EOT
-    Join account UPN/sAM-compatible form (e.g. admin@sumedhalabs.com). Required when ad_join_mechanism=realm_userdata,
-    or when ssm_aws_managed + ad_fallback_adcli_after_ssm=true (fallback uses sAM portion before '@' as adcli -U).
+    Account used for domain join (UPN form, e.g. admin@sumedhalabs.com). Required when ad_join_mechanism=realm_userdata
+    (must have permission to join computers to the domain). Override in terraform.tfvars or backend AD_JOIN_USER_UPN.
+    When ad_join_mechanism=ssm_aws_managed and ad_fallback_adcli_after_ssm=true, required for adcli fallback (SAM = part before @).
     EOT
   type        = string
-  default     = ""
+  default     = "admin@sumedhalabs.com"
 }
 
 variable "ad_join_password_ssm_parameter_name" {
