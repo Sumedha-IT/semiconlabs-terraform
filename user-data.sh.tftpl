@@ -1,5 +1,9 @@
 #!/bin/bash
-set -euo pipefail
+# `-e` removed: this script intentionally tolerates individual command failures
+# (each critical step has its own `|| true` / explicit error log). With `-e`,
+# any non-handled failure would abort bootstrap silently — including the AD-join
+# phase — leaving the instance unusable.
+set -uo pipefail
 
 LOG=/var/log/lab-bootstrap.log
 exec > >(tee -a "$LOG") 2>&1
@@ -53,10 +57,11 @@ lab_finalize_sssd_for_dcv() {
 sed -i '/efs/d' /etc/fstab || true
 sed -i '/fs-0985e64c096c42f09/d' /etc/fstab || true
 
-# Wait for cloud-init
-lab_log "cloud-init: waiting for modules to finish..."
-cloud-init status --wait || true
-lab_log "cloud-init: wait returned"
+# DO NOT call `cloud-init status --wait` here. This script IS executed by
+# cloud-init's modules-final stage, so waiting for cloud-init to reach `done`
+# from inside it causes an infinite self-wait (the deadlock that previously
+# stranded bootstrap before AD join ever started).
+lab_log "cloud-init: skipping self-wait (script runs inside modules-final)"
 
 # SSH
 systemctl enable sshd
@@ -211,30 +216,70 @@ lab_log "ssm_aws_managed: enable/restart amazon-ssm-agent (required before direc
 systemctl enable amazon-ssm-agent.service 2>/dev/null || systemctl enable amazon-ssm-agent 2>/dev/null || true
 systemctl restart amazon-ssm-agent 2>/dev/null || lab_log "WARN could not restart amazon-ssm-agent (non-fatal)"
 
-lab_log "ssm_aws_managed: wait for Fleet Manager PingStatus Online (association cannot apply until then; max 900s)"
+# IMPORTANT: we do NOT call `aws ssm describe-instance-information` here.
+# That API requires `ssm:DescribeInstanceInformation`, which is NOT in
+# `AmazonSSMManagedInstanceCore`. With the default instance role the call
+# returns AccessDenied → silently empty PingStatus → false 300/900s timeout.
+# A LOCAL health check is exactly as good: once the agent is active and has
+# successfully exchanged credentials with AWS, the managed instance will be
+# reported Online to Fleet Manager and the association will deliver.
+lab_log "ssm_aws_managed: wait for amazon-ssm-agent local readiness (no AWS API needed)"
 SSM_ONLINE_DEADLINE=$(( $(date +%s) + 900 ))
 SSM_SEEN_GOOD=""
+ssm_agent_local_online() {
+  systemctl is-active --quiet amazon-ssm-agent 2>/dev/null || return 1
+  # Agent writes a registration key once `EC2 registration was successful`.
+  [ -s /var/lib/amazon/ssm/Vault/Store/RegistrationKey ] || return 1
+  # And it logs that creds are ready right after.
+  journalctl -u amazon-ssm-agent --since "10 min ago" --no-pager 2>/dev/null \
+    | grep -qE "Credentials ready|EC2 registration was successful" \
+    && return 0
+  # Fallback: tail the agent log directly if journalctl is restricted.
+  tail -n 200 /var/log/amazon/ssm/amazon-ssm-agent.log 2>/dev/null \
+    | grep -qE "Credentials ready|EC2 registration was successful" \
+    && return 0
+  return 1
+}
 while [ "$(date +%s)" -lt "$SSM_ONLINE_DEADLINE" ]; do
-  PST=""
-  if command -v aws >/dev/null 2>&1; then
-    PST=$(aws ssm describe-instance-information \
-      --region "$REGION" \
-      --filters "Key=InstanceIds,Values=$${INSTANCE_ID}" \
-      --query 'InstanceInformationList[0].PingStatus' \
-      --output text 2>/dev/null || true)
+  if ssm_agent_local_online; then
+    SSM_SEEN_GOOD=yes
+    break
   fi
-  PST=$(echo "$PST" | tr -d '\r\t\n' )
-  lab_log "ssm_aws_managed: SSM PingStatus poll (target Online)"
-  echo "$PST" | grep -qi '^Online$' && SSM_SEEN_GOOD=yes && break
-  sleep 15
+  lab_log "ssm_aws_managed: amazon-ssm-agent not locally ready yet (active=$(systemctl is-active amazon-ssm-agent 2>/dev/null), reg=$([ -s /var/lib/amazon/ssm/Vault/Store/RegistrationKey ] && echo yes || echo no))"
+  sleep 10
 done
 if [ "$SSM_SEEN_GOOD" = "yes" ]; then
-  lab_log "ssm_aws_managed: SSM Online confirmed; settling 45s for State Manager to deliver join document"
-  sleep 45
+  lab_log "ssm_aws_managed: agent locally healthy; settling 30s for State Manager to deliver join document"
+  sleep 30
 else
-  lab_log "WARN ssm_aws_managed: PingStatus Online not observed in 900s — check IAM LabSSMRole (AmazonSSMManagedInstanceCore, AmazonSSMDirectoryServiceAccess); join may fail"
+  lab_log "WARN ssm_aws_managed: amazon-ssm-agent never reached local readiness in 900s — check journalctl -u amazon-ssm-agent and instance egress to ssm/ssmmessages.${aws_region}.amazonaws.com"
 fi
 %{ endif ~}
+
+# Ensure cloud / DCV users can run lab admin commands (sudo dcv create-session,
+# realm join, sssd restart) WITHOUT a TTY — golden AMIs don't always ship a
+# NOPASSWD sudoers drop-in, and `ssh ... centos@host "sudo dcv ..."` runs
+# without a controlling terminal so it fails with "sudo: a terminal is required
+# to read the password". Idempotent.
+if [ ! -f /etc/sudoers.d/95-lab-cloud-users ]; then
+  cat >/etc/sudoers.d/95-lab-cloud-users <<'LAB_SUDO_EOF'
+# Installed by lab-bootstrap; required for DCV/SSSD admin commands over SSH.
+Defaults:centos !requiretty
+Defaults:cloud-user !requiretty
+Defaults:ec2-user !requiretty
+Defaults:rocky !requiretty
+Defaults:almalinux !requiretty
+Defaults:admin !requiretty
+centos     ALL=(ALL) NOPASSWD: ALL
+cloud-user ALL=(ALL) NOPASSWD: ALL
+ec2-user   ALL=(ALL) NOPASSWD: ALL
+rocky      ALL=(ALL) NOPASSWD: ALL
+almalinux  ALL=(ALL) NOPASSWD: ALL
+admin      ALL=(ALL) NOPASSWD: ALL
+LAB_SUDO_EOF
+  chmod 0440 /etc/sudoers.d/95-lab-cloud-users
+  lab_log "installed /etc/sudoers.d/95-lab-cloud-users (NOPASSWD for cloud/DCV users)"
+fi
 
 %{ if ad_join_mechanism == "realm_userdata" ~}
 JOIN_PW=""
