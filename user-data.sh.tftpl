@@ -56,7 +56,8 @@ lab_install_efs_tool_profile_from_tf() {
     local max_try=40
     local n=0
     while [ "$${n}" -lt "$${max_try}" ]; do
-      n=$((n + 1))
+      # Avoid $((...)) here: Terraform .tftpl can leave stray "$$" in output and break cloud-init.
+      n=$$(awk -v k="$${n}" 'BEGIN{print k+1}')
       resolved=""
       for cand in "$${su}" "$${short}" "$${short}@$${ad_dom}"; do
         [ -z "$${cand}" ] && continue
@@ -83,7 +84,8 @@ lab_install_efs_tool_profile_from_tf() {
       if [ "$${gate_ok}" = "1" ]; then
         break
       fi
-      if [ "$${n}" -eq 1 ] || [ $$(( n % 8 )) -eq 0 ]; then
+      _nmod=$$(awk -v k="$${n}" 'BEGIN{print k%8}')
+      if [ "$${n}" -eq 1 ] || [ "$${_nmod}" -eq 0 ]; then
         lab_log "efs_tool_profile: waiting for NSS/SSSD + group membership (user=$${su}, try $${n}/$${max_try}, resolved=$${resolved:-empty})"
       fi
       sleep 15
