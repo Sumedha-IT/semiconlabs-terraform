@@ -246,8 +246,21 @@ else
   lab_log "WARN EFS: coreutils 'timeout' missing; skipping EFS mount to avoid blocking bootstrap"
 fi
 
-# AWS CLI v2 — use lab_aws() for all CLI calls. Avoid `$$($${AWSBIN} ...)` in rendered user-data: some
-# pipelines leave a literal `$$` before `(`, so bash treats `$$` as PID and fails with "unexpected token `('".
+# AD + aws RPMs first (matches DCV guide package step): gives /usr/bin/aws for SSM/Secrets before v2 zip;
+# avoids `lab_aws: command not found` when the AMI ships no working CLI yet.
+lab_log "early dnf/yum: realmd adcli sssd krb5-workstation awscli curl unzip (before awscli v2 zip)"
+if command -v dnf >/dev/null 2>&1; then
+  dnf -q -y install realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
+    krb5-workstation samba-common-tools openldap-clients \
+    curl unzip ca-certificates awscli 2>&1 || true
+elif command -v yum >/dev/null 2>&1; then
+  yum -q -y install realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
+    krb5-workstation samba-common-tools openldap-clients \
+    curl unzip ca-certificates awscli 2>&1 || true
+fi
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:$${PATH}"
+
+# AWS CLI v2 — use lab_aws() for all CLI calls (prefers /usr/local/bin/aws after successful zip install).
 lab_ensure_awscli_v2 || true
 if [ -x /usr/local/bin/aws ]; then
   export PATH="/usr/local/bin:/usr/local/sbin:$${PATH}"
@@ -262,7 +275,9 @@ lab_aws() {
     return 127
   fi
 }
-lab_log "bootstrap aws: $$(lab_aws --version 2>&1 | head -1)"
+# Do NOT use "$$(lab_aws ...)" inside double quotes — bash expands $$ to PID there.
+LAB_AWS_BOOT_LINE=$$(lab_aws --version 2>&1 | head -1) || LAB_AWS_BOOT_LINE="(lab_aws failed)"
+lab_log "bootstrap aws: $$LAB_AWS_BOOT_LINE"
 
 %{ if enable_ad_join ~}
 lab_log "AD phase: mechanism=${ad_join_mechanism} domain=${ad_domain}"
@@ -291,16 +306,7 @@ if command -v nmcli >/dev/null 2>&1; then
 fi
 %{ endif ~}
 
-lab_log "install/check AD client packages (dnf|yum)"
-# Golden AMI should include these; reinstall is safe for missing deps (ldap/clients, tools).
-if command -v dnf >/dev/null 2>&1; then
-  dnf -q -y install realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
-    krb5-workstation samba-common-tools openldap-clients awscli 2>&1 || true
-elif command -v yum >/dev/null 2>&1; then
-  yum -q -y install realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
-    krb5-workstation samba-common-tools openldap-clients awscli 2>&1 || true
-fi
-lab_log "AD client packages step finished"
+lab_log "AD client packages: already installed in early dnf/yum block (reinstall skipped here)"
 
 # CloudLabs NICE DCV + AD guide — lab-docs/_dcv_doc_snippet.txt Section 4.5 (verbatim layout; Terraform fills domain/realm/shell).
 lab_write_sssd_conf_cloudlabs_doc() {
