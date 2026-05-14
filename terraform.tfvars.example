@@ -1,8 +1,11 @@
 # Copy to terraform.tfvars (gitignored) and adjust. Current golden lab AMI (ap-south-1, GNOME+DCV+PAM; AD join via user-data + SSM):
 ami_id = "ami-066401294ec783ea4"
 
-# Optional: domain join password for realm_userdata / adcli fallback (no SSM read). Prefer SSM in production.
-# ad_join_password = "your-domain-join-service-account-password"
+# Domain join (realm_userdata): defaults also in variables.tf — override here to avoid committing secrets.
+# Default join user is AWS Managed Microsoft AD **admin** (SAM); replace with a delegated Joiners user when ready.
+# ad_join_user     = "admin"
+# ad_join_user     = "slabs-user@SUMEDHALABS.COM"   # UPN with Kerberos realm (not @sumedhalabs.com) if needed
+# ad_join_password = "your-join-password"
 
 # Optional overrides — defaults also live in variables.tf
 # instance_type = "m6a.xlarge"

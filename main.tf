@@ -4,6 +4,8 @@ provider "aws" {
 
 locals {
   lower_ad_domain = lower(var.ad_domain)
+  # Kerberos realm for sssd.conf (CloudLabs DCV guide); matches typical Managed AD DNS name → REALM mapping.
+  ad_krb5_realm = upper(var.ad_domain)
   # aws_ssm_association.parameters only accepts string values (not lists). AWS also rejects a single
   # comma-separated value for dnsIpAddresses (validates the whole string as one IPv4).
   # Passing one directory DNS IP satisfies SSM; user-data still applies the full var.ad_dns_ips list
@@ -55,6 +57,7 @@ resource "aws_instance" "CentOS8-AMD" {
     enable_ad_join                        = var.enable_ad_join
     ad_join_mechanism                     = var.ad_join_mechanism
     ad_domain                             = var.ad_domain
+    ad_krb5_realm                         = local.ad_krb5_realm
     lower_ad_domain                       = local.lower_ad_domain
     ad_join_user                            = var.ad_join_user
     ad_join_password_b64                    = trimspace(var.ad_join_password) != "" ? base64encode(var.ad_join_password) : ""

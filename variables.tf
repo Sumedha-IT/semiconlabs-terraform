@@ -95,7 +95,8 @@ variable "ad_directory_id" {
 variable "ad_join_mechanism" {
   description = <<-EOT
     ssm_aws_managed — Terraform creates aws_ssm_association with document AWS-JoinDirectoryServiceDomain (no join password on the instance). Can fail when the document's AWS CLI resolves the wrong region on the guest.
-    realm_userdata — Direct domain join in user-data (lab-docs DCV-Setup-On-EC2-Guide style: password from SSM or Secrets Manager on the instance, then realm join). Default in this repo is realm_userdata so labs work without the managed SSM document.
+    realm_userdata — CloudLabs NICE DCV + AD guide (lab-docs/_dcv_doc_snippet.txt): user-data runs Step 4.4 **adcli join** (password from Terraform base64, SSM, or Secrets) then Step 4.5 **sssd.conf** as documented — not `realm join`.
+    Default in this repo is realm_userdata so labs work without the managed SSM document.
     Override per environment in terraform.tfvars or via backend env LAB_AD_JOIN_MECHANISM / AD_JOIN_MECHANISM.
   EOT
   type        = string
@@ -109,7 +110,7 @@ variable "ad_join_mechanism" {
 
 # Per-instance AD join (do not bake join into golden AMI).
 variable "enable_ad_join" {
-  description = "If true, join this instance to the directory (SSM document for Managed AD, or realm join in user-data)."
+  description = "If true, join this instance to the directory (SSM document for Managed AD, or CloudLabs adcli+sssd in user-data when ad_join_mechanism=realm_userdata)."
   type        = bool
   default     = true
 
@@ -145,23 +146,25 @@ variable "ad_domain" {
 
 variable "ad_join_user" {
   description = <<-EOT
-    Account used for domain join (UPN form, e.g. admin@sumedhalabs.com). Required when ad_join_mechanism=realm_userdata
-    (must have permission to join computers to the domain). Override in terraform.tfvars or backend AD_JOIN_USER_UPN.
-    When ad_join_mechanism=ssm_aws_managed and ad_fallback_adcli_after_ssm=true, required for adcli fallback (SAM = part before @).
+    Account used for domain join. Use the **sAMAccountName** (e.g. delegated slabs-user) or UPN with **Kerberos realm**
+    (e.g. slabs-user@SUMEDHALABS.COM). Avoid user@sumedhalabs.com with adcli/realm on RHEL8 — you may get
+    "KDC reply did not match expectations". For AWS Managed Microsoft AD, the customer **Admin** account SAM is
+    **admin** (broad OU rights; prefer a Joiners-only user when you can delegate). Non-admin accounts must be
+    allowed to create computer objects in the target OU or join fails with userAccountControl / insufficient access.
     EOT
   type        = string
-  default     = "admin@sumedhalabs.com"
+  default     = "admin"
 }
 
 variable "ad_join_password" {
   description = <<-EOT
     Plaintext domain-join password (realm_userdata and ad_fallback_adcli). When non-empty, user-data uses this
     instead of reading SSM/Secrets (no instance IAM needed for GetParameter). SECURITY: stored in Terraform state
-    and embedded (base64) in EC2 user_data — use SSM Parameter Store or Secrets Manager for production; rotate if committed.
+    and embedded (base64) in EC2 user_data — prefer empty + SSM/Secrets in production; rotate if committed to git.
   EOT
   type        = string
   sensitive   = true
-  default     = "SemiconLabs@2026"
+  default     = "Sumedhalabs@2026"
 }
 
 variable "ad_join_password_ssm_parameter_name" {

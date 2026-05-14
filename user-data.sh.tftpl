@@ -13,7 +13,7 @@ lab_log() {
 }
 
 # Install AWS CLI v2 to /usr/local/bin. RPM awscli v1 often fails or mis-resolves region for
-# ssm:GetParameter / secretsmanager from user-data (empty password -> realm join skipped).
+# ssm:GetParameter / secretsmanager from user-data (empty password -> adcli join skipped).
 lab_ensure_awscli_v2() {
   if [ -x /usr/local/bin/aws ]; then
     lab_log "awscli v2 already present: $(/usr/local/bin/aws --version 2>&1 | head -1)"
@@ -253,7 +253,8 @@ if [ -x /usr/local/bin/aws ]; then
 fi
 AWSBIN="/usr/local/bin/aws"
 if [ ! -x "$${AWSBIN}" ]; then AWSBIN=$(command -v aws || echo aws); fi
-lab_log "bootstrap AWSBIN=$${AWSBIN} ($$($${AWSBIN} --version 2>&1 | head -1))"
+LAB_AWS_VER=$$($${AWSBIN} --version 2>&1 | head -1) || true
+lab_log "bootstrap AWSBIN=$${AWSBIN} ($${LAB_AWS_VER})"
 
 %{ if enable_ad_join ~}
 lab_log "AD phase: mechanism=${ad_join_mechanism} domain=${ad_domain}"
@@ -292,6 +293,31 @@ elif command -v yum >/dev/null 2>&1; then
     krb5-workstation samba-common-tools openldap-clients awscli 2>&1 || true
 fi
 lab_log "AD client packages step finished"
+
+# CloudLabs NICE DCV + AD guide — lab-docs/_dcv_doc_snippet.txt Section 4.5 (verbatim layout; Terraform fills domain/realm/shell).
+lab_write_sssd_conf_cloudlabs_doc() {
+  lab_log "sssd: Step 4.5 — write /etc/sssd/sssd.conf (joined-with-adcli) per CloudLabs DCV guide"
+  cat >/etc/sssd/sssd.conf <<'SSSDCLOUDLABS'
+[sssd]
+domains = ${ad_domain}
+config_file_version = 2
+services = nss, pam
+
+[domain/${ad_domain}]
+ad_domain = ${ad_domain}
+krb5_realm = ${ad_krb5_realm}
+realmd_tags = manages-system joined-with-adcli
+cache_credentials = True
+id_provider = ad
+krb5_store_password_if_offline = True
+default_shell = ${ad_sssd_default_shell}
+ldap_id_mapping = True
+use_fully_qualified_names = False
+fallback_homedir = /home/%u
+access_provider = ad
+SSSDCLOUDLABS
+  chmod 600 /etc/sssd/sssd.conf
+}
 
 %{ if ad_join_mechanism == "ssm_aws_managed" ~}
 # JoinDirectoryServiceDomain only runs via SSM once the managed instance reports Online — ensure agent is up early.
@@ -352,7 +378,7 @@ fi
 %{ endif ~}
 
 # Ensure cloud / DCV users can run lab admin commands (sudo dcv create-session,
-# realm join, sssd restart) WITHOUT a TTY — golden AMIs don't always ship a
+# adcli, sssd restart) WITHOUT a TTY — golden AMIs don't always ship a
 # NOPASSWD sudoers drop-in, and `ssh ... centos@host "sudo dcv ..."` runs
 # without a controlling terminal so it fails with "sudo: a terminal is required
 # to read the password". Idempotent.
@@ -423,6 +449,7 @@ if [ -z "$${JOIN_PW}" ] || [ "$${JOIN_PW}" = "None" ]; then
   echo "ERROR: Could not read AD join password from SSM parameter '${ad_join_password_ssm_parameter_name}'. Set ad_join_password in terraform.tfvars, or attach ssm:GetParameter + kms:Decrypt to the instance role. Parameter must exist in $${REGION}." >&2
 %{ endif ~}
 else
+  JOIN_PW=$$(printf '%s' "$${JOIN_PW}" | tr -d '\r')
 %{ if length(ad_dns_ips) > 0 ~}
   {
     echo "[libdefaults]"
@@ -458,22 +485,25 @@ else
     done
   }
 
-  do_realm_join() {
+  ADCLI_SAM_J='${ad_join_user}'
+  case "$${ADCLI_SAM_J}" in *@*) ADCLI_SAM_J="$${ADCLI_SAM_J%%@*}";; esac
+
+  # Step 4.4 — Join the Domain (guide uses: echo 'PASSWORD' | sudo adcli join ... ; we use printf for safe newlines).
+  do_adcli_join_cloudlabs_doc() {
+    chronyc makestep 2>/dev/null || true
 %{ if ad_computer_ou != "" ~}
-    echo "$${JOIN_PW}" | realm join "${lower_ad_domain}" \
-      -U "${ad_join_user}" \
-      --computer-ou='${ad_computer_ou}' 2>&1
+    printf '%s\n' "$${JOIN_PW}" | adcli join -v '${ad_domain}' -U "$${ADCLI_SAM_J}" --computer-ou='${ad_computer_ou}' --stdin-password 2>&1
 %{ else ~}
-    echo "$${JOIN_PW}" | realm join "${lower_ad_domain}" \
-      -U "${ad_join_user}" 2>&1
+    printf '%s\n' "$${JOIN_PW}" | adcli join -v '${ad_domain}' -U "$${ADCLI_SAM_J}" --stdin-password 2>&1
 %{ endif ~}
   }
 
-  if retry 5 do_realm_join; then
-    lab_log "realm_userdata: domain join succeeded"
+  if retry 5 do_adcli_join_cloudlabs_doc; then
+    lab_log "realm_userdata: adcli join OK (CloudLabs DCV guide Step 4.4; lab-docs/_dcv_doc_snippet.txt)"
+    lab_write_sssd_conf_cloudlabs_doc
     lab_finalize_sssd_for_dcv
   else
-    lab_log "ERROR realm_userdata: domain join failed after retries" >&2
+    lab_log "ERROR realm_userdata: adcli join failed after retries (guide: Steps 4.2–4.4, password, chronyc makestep)" >&2
   fi
   unset JOIN_PW
 fi
@@ -538,9 +568,10 @@ if [ "$${JOINED}" != "1" ]; then
       chronyc makestep 2>/dev/null || true
       FB_ATT=1
       while [ "$${FB_ATT}" -le 3 ]; do
-        if printf '%s' "$${JOIN_PW_FB}" | adcli join -v '${ad_domain}' -U "$${ADCLI_SAM}" --stdin-password; then
-          lab_log "ad_fallback_adcli: adcli join succeeded (attempt=$${FB_ATT})"
+        if printf '%s\n' "$${JOIN_PW_FB}" | adcli join -v '${ad_domain}' -U "$${ADCLI_SAM}" --stdin-password; then
+          lab_log "ad_fallback_adcli: adcli join succeeded (attempt=$${FB_ATT}; CloudLabs Step 4.4)"
           JOINED=1
+          lab_write_sssd_conf_cloudlabs_doc
           break
         fi
         lab_log "WARN ad_fallback_adcli: adcli join attempt $${FB_ATT} failed — retry in 60s"
