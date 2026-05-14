@@ -239,9 +239,31 @@ variable "ad_fallback_adcli_after_ssm" {
 }
 
 variable "ad_sssd_default_shell" {
-  description = "SSSD domain default_shell and override_shell (interactive login for DCV/SSH when AD loginShell is empty or /bin/false). Written in sssd.conf and patched by lab_finalize_sssd_for_dcv if missing."
+  description = <<-EOT
+    SSSD `default_shell` and `override_shell` (interactive login for DCV/SSH when AD loginShell is empty or /bin/false).
+    Default `/bin/tcsh` for Cadence-style c-shell labs; user-data installs the `tcsh` package when the path contains `tcsh`.
+    Override in terraform.tfvars, domain `terraform_variables`, or backend `LAB_AD_SSSD_DEFAULT_SHELL`.
+  EOT
   type        = string
-  default     = "/bin/bash"
+  default     = "/bin/tcsh"
+}
+
+# EFS NFS host (DNS only, no ":/" suffix). Root mount uses host:/ ; tool mounts use host:/efs/tools/<code> .
+variable "lab_efs_nfs_host" {
+  type        = string
+  default     = "fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com"
+  description = "EFS filesystem DNS name for lab mounts (same region as instance). Empty string skips all EFS mounts in user-data."
+}
+
+# Bind-mount EFS tool trees under /efs/tools/<code> (PD / DV / AL). Narrow per product, e.g. [\"PD\"] only for PD labs.
+variable "lab_efs_tools_mount_codes" {
+  type        = list(string)
+  default     = ["PD", "DV", "AL"]
+  description = "Which /efs/tools/<code> subtrees to NFS-mount. Match learner AD group / lab product; empty [] skips tool submounts (root /efs still mounts when lab_efs_nfs_host is set)."
+  validation {
+    condition     = length(var.lab_efs_tools_mount_codes) == 0 || alltrue([for c in var.lab_efs_tools_mount_codes : contains(["PD", "DV", "AL"], c)])
+    error_message = "lab_efs_tools_mount_codes must be empty or contain only PD, DV, or AL."
+  }
 }
 
 # Base64(JSON) from the app at apply time: { session_user, source_files[], ad_groups_any[] }.

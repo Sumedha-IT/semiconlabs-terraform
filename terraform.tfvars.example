@@ -10,3 +10,10 @@ ami_id = "ami-066401294ec783ea4"
 # Optional overrides — defaults also live in variables.tf
 # instance_type = "m6a.xlarge"
 # subnet_id     = "subnet-0c4d6990bb08a09b2"
+# Default SSSD shell is /bin/tcsh; use bash if needed:
+# ad_sssd_default_shell = "/bin/bash"
+# EFS: DNS only (see variables.tf defaults). Mount only one tool tree for group-scoped labs:
+# lab_efs_tools_mount_codes = ["PD"]
+# lab_efs_tools_mount_codes = ["DV"]
+# lab_efs_tools_mount_codes = ["AL"]
+# lab_efs_nfs_host = "fs-xxxx.efs.ap-south-1.amazonaws.com"

@@ -73,6 +73,8 @@ resource "aws_instance" "CentOS8-AMD" {
     ad_ssm_association_delay              = var.ad_ssm_association_delay
     ad_sssd_default_shell                 = var.ad_sssd_default_shell
     ad_fallback_adcli_after_ssm           = var.ad_fallback_adcli_after_ssm
+    lab_efs_nfs_host                      = var.lab_efs_nfs_host
+    lab_efs_tools_mount_codes             = var.lab_efs_tools_mount_codes
     lab_efs_tool_profile_b64             = var.lab_efs_tool_profile_b64
     lab_ssh_public_key_b64 = base64encode(
       trimspace(tls_private_key.master_key_gen.public_key_openssh),

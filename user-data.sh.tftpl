@@ -155,7 +155,7 @@ lab_ensure_awscli_v2() {
   fi
   if [ -x /usr/local/bin/aws ]; then
     lab_log "awscli v2 installed: $(/usr/local/bin/aws --version 2>&1 | head -1)"
-    export PATH="/usr/local/bin:/usr/local/sbin:$${PATH}"
+    export PATH="/usr/local/bin:/usr/local/sbin:$$PATH"
     return 0
   fi
   lab_log "WARN awscli v2 install failed; will use PATH aws ($(command -v aws 2>/dev/null || echo none))"
@@ -268,7 +268,9 @@ lab_finalize_sssd_for_dcv() {
 
 # CRITICAL: Remove EFS from fstab to prevent boot hangs
 sed -i '/efs/d' /etc/fstab || true
-sed -i '/fs-0985e64c096c42f09/d' /etc/fstab || true
+%{ if trimspace(lab_efs_nfs_host) != "" ~}
+sed -i '\|${trimspace(lab_efs_nfs_host)}|d' /etc/fstab || true
+%{ endif ~}
 
 # DO NOT call `cloud-init status --wait` here. This script IS executed by
 # cloud-init's modules-final stage, so waiting for cloud-init to reach `done`
@@ -371,19 +373,32 @@ systemctl enable lab-ssh-key-bootstrap.service 2>/dev/null || true
 /usr/local/sbin/lab-ssh-key-bootstrap.sh || lab_log "WARN lab-ssh-key-bootstrap.sh returned non-zero"
 
 # EFS: must NOT block AD join. A stuck NFS mount prevented the rest of userdata (no "AD phase" in log).
-lab_log "EFS: attempting mount (max 90s; failure is non-fatal for domain join)"
+%{ if trimspace(lab_efs_nfs_host) != "" ~}
+lab_log "EFS: attempting root + tool mounts (max 90s each; failure is non-fatal for domain join)"
 mkdir -p /efs
-EFS_SRC="fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com:/"
+EFS_SRC="${trimspace(lab_efs_nfs_host)}:/"
 if command -v timeout >/dev/null 2>&1; then
   if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport \
     "$${EFS_SRC}" /efs 2>&1; then
-    lab_log "EFS: mounted on /efs"
+    lab_log "EFS: mounted on /efs ($${EFS_SRC})"
   else
-    lab_log "WARN EFS: mount failed or timed out — continuing without /efs"
+    lab_log "WARN EFS: root mount failed or timed out — continuing without /efs"
   fi
+%{ for code in lab_efs_tools_mount_codes ~}
+  mkdir -p /efs/tools/${code}
+  if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport \
+    "${trimspace(lab_efs_nfs_host)}:/efs/tools/${code}" "/efs/tools/${code}" 2>&1; then
+    lab_log "EFS: mounted /efs/tools/${code}"
+  else
+    lab_log "WARN EFS: mount failed or timed out for /efs/tools/${code}"
+  fi
+%{ endfor ~}
 else
   lab_log "WARN EFS: coreutils 'timeout' missing; skipping EFS mount to avoid blocking bootstrap"
 fi
+%{ else ~}
+lab_log "EFS: skipped (lab_efs_nfs_host empty)"
+%{ endif ~}
 
 # AD + aws RPMs first (matches DCV guide package step): gives /usr/bin/aws for SSM/Secrets before v2 zip;
 # avoids `lab_aws: command not found` when the AMI ships no working CLI yet.
@@ -397,12 +412,21 @@ elif command -v yum >/dev/null 2>&1; then
     krb5-workstation samba-common-tools openldap-clients \
     curl unzip ca-certificates awscli 2>&1 || true
 fi
-export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:$${PATH}"
+# Interactive shell for AD users (SSSD default_shell / override_shell). Install before join/finalize.
+LAB_SSSD_SH='${ad_sssd_default_shell}'
+if [[ "$LAB_SSSD_SH" == *tcsh* ]]; then
+  if ! command -v tcsh >/dev/null 2>&1; then
+    lab_log "early dnf/yum: installing tcsh package for SSSD shell"
+    command -v dnf >/dev/null 2>&1 && dnf -q -y install tcsh 2>&1 || true
+    command -v yum >/dev/null 2>&1 && yum -q -y install tcsh 2>&1 || true
+  fi
+fi
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:$$PATH"
 
 # AWS CLI v2 — use lab_aws() for all CLI calls (prefers /usr/local/bin/aws after successful zip install).
 lab_ensure_awscli_v2 || true
 if [ -x /usr/local/bin/aws ]; then
-  export PATH="/usr/local/bin:/usr/local/sbin:$${PATH}"
+  export PATH="/usr/local/bin:/usr/local/sbin:$$PATH"
 fi
 lab_aws() {
   if [ -x /usr/local/bin/aws ]; then
