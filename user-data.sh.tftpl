@@ -56,8 +56,8 @@ lab_install_efs_tool_profile_from_tf() {
     local max_try=40
     local n=0
     while [ "$${n}" -lt "$${max_try}" ]; do
-      # Avoid $((...)) here: Terraform .tftpl can leave stray "$$" in output and break cloud-init.
-      n=$$(awk -v k="$${n}" 'BEGIN{print k+1}')
+      # Use single `$(` — `$$` before `(` can survive in rendered user_data and bash errors (PID + '(').
+      n=$(awk -v k="$${n}" 'BEGIN{print k+1}')
       resolved=""
       for cand in "$${su}" "$${short}" "$${short}@$${ad_dom}"; do
         [ -z "$${cand}" ] && continue
@@ -84,7 +84,7 @@ lab_install_efs_tool_profile_from_tf() {
       if [ "$${gate_ok}" = "1" ]; then
         break
       fi
-      _nmod=$$(awk -v k="$${n}" 'BEGIN{print k%8}')
+      _nmod=$(awk -v k="$${n}" 'BEGIN{print k%8}')
       if [ "$${n}" -eq 1 ] || [ "$${_nmod}" -eq 0 ]; then
         lab_log "efs_tool_profile: waiting for NSS/SSSD + group membership (user=$${su}, try $${n}/$${max_try}, resolved=$${resolved:-empty})"
       fi
@@ -119,7 +119,7 @@ ZZLABEFS
     echo '{'
     echo '  "efs_profile_installed": true,'
     echo '  "note": "exists_at_install is recorded at cloud-init; profile.d sources these paths at interactive shell/DCV login.",'
-    echo "  \"checked_utc\": \"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+    echo "  \"checked_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
     echo '  "profile_d": "/etc/profile.d/zz-lab-efs-tools.sh",'
     echo '  "sources": ['
     first=1
@@ -135,7 +135,7 @@ ZZLABEFS
     echo '}'
   } >/etc/lab/efs-tool-profile-status.json 2>/dev/null || true
   chmod 644 /etc/lab/efs-tool-profile-status.json 2>/dev/null || true
-  lab_log "efs_tool_profile: installed /etc/profile.d/zz-lab-efs-tools.sh (sources=$$(wc -l </etc/lab/efs-tool-sources.lst) lines); wrote /etc/lab/efs-tool-profile-status.json"
+  lab_log "efs_tool_profile: installed /etc/profile.d/zz-lab-efs-tools.sh (sources=$(wc -l </etc/lab/efs-tool-sources.lst) lines); wrote /etc/lab/efs-tool-profile-status.json"
 }
 
 # Install AWS CLI v2 to /usr/local/bin. RPM awscli v1 often fails or mis-resolves region for
