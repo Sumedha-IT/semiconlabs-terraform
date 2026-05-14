@@ -468,13 +468,13 @@ else
 %{ if length(ad_dns_ips) > 0 ~}
   {
     echo "[libdefaults]"
-    echo "default_realm = ${ad_domain}"
+    echo "default_realm = ${ad_krb5_realm}"
     echo "dns_lookup_realm = true"
     echo "dns_lookup_kdc = true"
     echo "rdns = false"
     echo ""
     echo "[realms]"
-    echo " ${ad_domain} = {"
+    echo " ${ad_krb5_realm} = {"
 %{ for idx, ip in ad_dns_ips ~}
     echo "  kdc = ${ip}"
 %{ endfor ~}
@@ -482,8 +482,8 @@ else
     echo " }"
     echo ""
     echo "[domain_realm]"
-    echo " .${lower_ad_domain} = ${ad_domain}"
-    echo " ${lower_ad_domain} = ${ad_domain}"
+    echo " .${lower_ad_domain} = ${ad_krb5_realm}"
+    echo " ${lower_ad_domain} = ${ad_krb5_realm}"
   } > /etc/krb5.conf
 %{ endif ~}
 
