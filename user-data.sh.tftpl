@@ -633,32 +633,50 @@ fi
 lab_log "AD phase finished"
 %{ endif ~}
 
-lab_log "DCV: writing dcv.conf console=${dcv_use_console_sessions} web_all=${dcv_web_listen_all}"
-# DCV base config (connectivity appended below if enabled).
-systemctl enable dcvserver
-systemctl restart dcvserver || true
+lab_log "DCV: /etc dcvserver.service (strip [Service] ExecStartPre) + late drop-in + dcv.conf boot auto-session=false web_all=${dcv_web_listen_all} (tf dcv_use_console_sessions=${dcv_use_console_sessions})"
+# 1) Copy vendor unit to /etc; strip ExecStartPre inside [Service] (el8 drop-ins do not remove main-unit lines).
+# 2) Vendor /usr/lib/.../dcvserver.service.d/*.conf may sort AFTER zzz-lab-… and re-add fatal modprobe — rename our
+#    fragment to zzzzzzzz-… so it sorts last, and quarantine any vendor .conf that sets ExecStartPre+modprobe.
+DCV_VENDOR=""
+for f in /usr/lib/systemd/system/dcvserver.service /lib/systemd/system/dcvserver.service; do
+  if [ -f "$${f}" ]; then DCV_VENDOR="$${f}"; break; fi
+done
+if [ -n "$${DCV_VENDOR}" ]; then
+  tr -d '\r' < "$${DCV_VENDOR}" | awk '/^\[/ { ins = ($$0 == "[Service]" || $$0 ~ /^\\[Service\\][[:space:]]*$$/) ? 1 : 0 } ins && $$0 ~ /^[[:space:]]*ExecStartPre[[:space:]]*=/ { next } { print }' > /etc/systemd/system/dcvserver.service
+  if [ ! -s /etc/systemd/system/dcvserver.service ]; then
+    lab_log "ERROR DCV: /etc/systemd/system/dcvserver.service is empty after vendor copy — removing corrupt file (masked/broken unit otherwise)"
+    rm -f /etc/systemd/system/dcvserver.service
+  else
+    lab_log "DCV: wrote /etc/systemd/system/dcvserver.service from $${DCV_VENDOR} (ExecStartPre stripped in [Service])"
+  fi
+else
+  lab_log "WARN DCV: vendor dcvserver.service not found"
+fi
+if [ -d /usr/lib/systemd/system/dcvserver.service.d ]; then
+  for conf in /usr/lib/systemd/system/dcvserver.service.d/*.conf; do
+    [ -f "$${conf}" ] || continue
+    if grep -qE '^[[:space:]]*ExecStartPre[[:space:]]*=' "$${conf}" 2>/dev/null && grep -qF modprobe "$${conf}" 2>/dev/null; then
+      lab_log "DCV: quarantine vendor drop-in $${conf} (ExecStartPre+modprobe)"
+      mv "$${conf}" "$${conf}.lab-quarantine" 2>/dev/null || true
+    fi
+  done
+fi
+rm -rf /etc/systemd/system/dcvserver.service.d
+mkdir -p /etc/systemd/system/dcvserver.service.d
+cat >/etc/systemd/system/dcvserver.service.d/zzzzzzzz-semiconlabs-dcv-execstartpre.conf <<'DCVZZZ'
+[Service]
+ExecStartPre=
+ExecStartPre=-/sbin/modprobe -a eveusb v4l2loopback
+StartLimitBurst=30
+StartLimitIntervalSec=120
+DCVZZZ
+systemctl daemon-reload
+systemctl reset-failed dcvserver 2>/dev/null || true
 
-%{ if dcv_use_console_sessions ~}
-cat >/etc/dcv/dcv.conf <<'DCVBASE'
-[security]
-authentication="system"
-pam-service-name="dcv"
-
-[session-management]
-create-session = true
-
-[session-management/automatic-console-session]
-owner = "%user%"
-enable = true
-
-[clipboard]
-enable=false
-
-[log]
-log-level=debug
-
-DCVBASE
-%{ else ~}
+# DCV must NOT auto-create a session at boot with a bogus owner. "%user%" in AWS/CloudLabs
+# samples is documentation shorthand, not a DCV substitution — it breaks login (owner:%user%).
+# Named virtual sessions are created by the app backend after SSH: dcv create-session 'SumedhaIT_<user>' --type virtual …
+# See lab-docs/_dcv_doc_snippet.txt Step 3.3 (create-session=false).
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [security]
 authentication="system"
@@ -667,10 +685,6 @@ pam-service-name="dcv"
 [session-management]
 create-session = false
 
-[session-management/automatic-console-session]
-owner = "%user%"
-enable = false
-
 [clipboard]
 enable=false
 
@@ -678,24 +692,51 @@ enable=false
 log-level=debug
 
 DCVBASE
-%{ endif ~}
 
 cat >>/etc/dcv/dcv.conf <<EOF
 [connectivity]
 %{ if dcv_web_listen_all ~}
-web-listen-endpoints=['0.0.0.0:8443']
+web-listen-endpoints=['0.0.0.0']
+quic-listen-endpoints=['0.0.0.0']
 enable-quic-frontend=false
 %{ endif ~}
 idle-timeout=0
 EOF
+# DCV 2025 + Type=dbus: websocket path uses AF_INET6. ipv6.disable=1 in kernel cmdline removes the whole stack
+# (/proc/sys/net/ipv6 never appears; modprobe ipv6 cannot fix until grub is updated and the instance reboots).
+if grep -q 'ipv6.disable=1' /proc/cmdline 2>/dev/null; then
+  lab_log "ERROR_LAB_KERN_IPV6_OFF: /proc/cmdline contains ipv6.disable=1 — DCV will not stay up; relaunching the same AMI does not help."
+  lab_log "FIX (one-time on instance): grubby --update-kernel=ALL --remove-args=ipv6.disable=1 && reboot  (AMI: drop ipv6.disable from /etc/default/grub before bake.)"
+else
+  if modprobe ipv6 2>/tmp/dcv.ipv6.err; then
+    lab_log "DCV: modprobe ipv6 OK"
+  else
+    lab_log "WARN DCV: modprobe ipv6 failed: $(tr -d '\r\n' </tmp/dcv.ipv6.err 2>/dev/null | head -c 400)"
+  fi
+  rm -f /tmp/dcv.ipv6.err 2>/dev/null || true
+  if [ -d /proc/sys/net/ipv6 ]; then
+    if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0)" = "1" ]; then
+      lab_log "DCV: re-enable IPv6 sysctl (all+default)"
+      sysctl -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null || true
+      sysctl -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null || true
+    fi
+    if [ -f /proc/sys/net/ipv6/conf/lo/disable_ipv6 ]; then
+      sysctl -w net.ipv6.conf.lo.disable_ipv6=0 2>/dev/null || true
+    fi
+  else
+    lab_log "WARN DCV: /proc/sys/net/ipv6 missing (no ipv6.disable=1 in cmdline) — check CONFIG_IPV6 / ipv6.ko on AMI"
+  fi
+fi
 
+systemctl unmask dcvserver 2>/dev/null || true
+systemctl enable dcvserver || true
+systemctl reset-failed dcvserver 2>/dev/null || true
 systemctl restart dcvserver || true
-lab_log "DCV service restarted post-config"
+lab_log "DCV service restarted post-config (/etc unit + vendor quarantine + zzzzzzzz drop-in + dcv.conf)"
 
-%{ if !dcv_use_console_sessions ~}
 sleep 2
+# Virtual labs use app-created named sessions; clear legacy console if anything left it open.
 sudo dcv close-session console 2>/dev/null || true
-%{ endif ~}
 
 systemctl enable sssd || true
 systemctl restart sssd || true
