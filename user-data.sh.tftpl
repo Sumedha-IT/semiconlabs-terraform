@@ -266,7 +266,7 @@ lab_finalize_sssd_for_dcv() {
   lab_log "finalize_sssd_for_dcv: done (sssd oddjob ready for DCV pam_sss)"
 }
 
-# CRITICAL: Remove EFS from fstab to prevent boot hangs
+# Strip stale lab/EFS fstab snippets; user-data reapplies IT block after a successful nfs mount (see BEGIN-lab-bootstrap-efs).
 sed -i '/efs/d' /etc/fstab || true
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
 sed -i '\|${trimspace(lab_efs_nfs_host)}|d' /etc/fstab || true
@@ -389,7 +389,7 @@ fi
 EFS_DNS='${trimspace(lab_efs_nfs_host)}'
 EFS_SRC="$${EFS_DNS}:/"
 TOOLS_LIST='${join(" ", lab_efs_tools_mount_codes)}'
-lab_log "EFS: attempting root nfs4 mount for $${EFS_DNS} (DNS first; tool dirs under /efs after mount; failures non-fatal)"
+lab_log "EFS: attempting root nfs4 mount for $${EFS_DNS} (DNS then optional IP fallback; IT: fstab + bind /efs/tools/<code>→/<code> + verify + umount /efs; failures non-fatal)"
 mkdir -p /efs
 if command -v getent >/dev/null 2>&1; then
   lab_log "EFS: DNS getent ahosts $${EFS_DNS}: $(getent ahosts "$${EFS_DNS}" 2>&1 | head -n 3 | tr '\n' ' ' | head -c 220)"
@@ -441,27 +441,83 @@ if ! grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
   fi
 fi
 %{ endif ~}
-# EFS NFSv4.1 exposes only the filesystem root (mount host:/ or IP:/). Subpaths like host:/efs/tools/DV are not
-# separate exports — use one root mount on /efs, then /efs/tools/<code> is the path on that filesystem.
+# EFS NFSv4.1: one root mount (host:/ or IP:/) → /efs. IT runbook: fstab + mkdir + mount /efs, bind /efs/tools/<code> → /<code>,
+# verify, then umount /efs so learners use /PD|/DV|/AL only (umount may stay busy while binds exist — logged).
+EFS_IT_MOUNTED=false
 if command -v findmnt >/dev/null 2>&1 && findmnt -n /efs >/dev/null 2>&1; then
+  EFS_IT_MOUNTED=true
+elif grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
+  EFS_IT_MOUNTED=true
+fi
+if [ "$EFS_IT_MOUNTED" = true ]; then
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
     if mkdir -p "/efs/tools/$c" 2>/dev/null; then
-      lab_log "EFS: ensured /efs/tools/$c (under root mount; no separate NFS submount)"
+      lab_log "EFS: ensured /efs/tools/$c"
     else
       lab_log "WARN EFS: mkdir /efs/tools/$c failed (permissions or read-only)"
     fi
   done
-elif grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
+  EFS_LINE=""
+  if command -v findmnt >/dev/null 2>&1; then
+    EFS_LINE=$(findmnt -n -o SOURCE /efs 2>/dev/null || true)
+  fi
+  if [ -z "$EFS_LINE" ]; then
+    EFS_LINE=$(awk '$2=="/efs" && ($3=="nfs4" || $3=="nfs") {print $1; exit}' /proc/mounts 2>/dev/null || true)
+  fi
+  EFS_SERVER="$${EFS_LINE%%:/*}"
+  if [ -n "$EFS_SERVER" ] && [ -n "$EFS_LINE" ]; then
+    sed -i '/# BEGIN-lab-bootstrap-efs/,/# END-lab-bootstrap-efs/d' /etc/fstab 2>/dev/null || true
+    {
+      echo "# BEGIN-lab-bootstrap-efs (IT: root nfs4 + product bind mounts; do not edit by hand — Terraform user-data)"
+      echo "$${EFS_SERVER}:/ /efs nfs4 nfsvers=4.1,defaults,_netdev 0 0"
+      for c in $TOOLS_LIST; do
+        [ -z "$c" ] && continue
+        echo "/efs/tools/$c /$c none bind 0 0"
+      done
+      echo "# END-lab-bootstrap-efs"
+    } >>/etc/fstab
+    lab_log "EFS: appended IT-style fstab (root + $(echo $TOOLS_LIST | wc -w) bind line(s))"
+  else
+    lab_log "WARN EFS: could not derive nfs SOURCE for fstab (findmnt/proc)"
+  fi
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
-    mkdir -p "/efs/tools/$c" 2>/dev/null && lab_log "EFS: ensured /efs/tools/$c" || lab_log "WARN EFS: mkdir /efs/tools/$c failed"
+    mkdir -p "/$c" 2>/dev/null || true
+    if mount --bind "/efs/tools/$c" "/$c" 2>&1; then
+      lab_log "EFS: IT bind /efs/tools/$c → /$c"
+    else
+      lab_log "WARN EFS: mount --bind /efs/tools/$c /$c failed"
+    fi
   done
-fi
-if command -v findmnt >/dev/null 2>&1 && findmnt -n /efs >/dev/null 2>&1; then
-  lab_log "EFS: SUMMARY OK — /efs is mounted ($(findmnt -n -o SOURCE,FSTYPE /efs 2>/dev/null | tr '\n' ' '))"
-elif grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
-  lab_log "EFS: SUMMARY OK — /efs nfs present in /proc/mounts"
+  if command -v findmnt >/dev/null 2>&1; then
+    lab_log "EFS: IT verify findmnt /efs: $(findmnt -n /efs 2>/dev/null || echo N/A)"
+    for c in $TOOLS_LIST; do
+      [ -z "$c" ] && continue
+      lab_log "EFS: IT verify findmnt /$c: $(findmnt -n /$c 2>/dev/null || echo N/A)"
+    done
+  fi
+  if command -v df >/dev/null 2>&1; then
+    lab_log "EFS: IT verify df -h (nfs): $(df -hT 2>/dev/null | grep -E 'nfs|Filesystem' | head -n 8 | tr '\n' ' ')"
+  fi
+  if [ -n "$(echo $TOOLS_LIST | tr -d '[:space:]')" ]; then
+    if umount /efs 2>&1; then
+      lab_log "EFS: IT umount /efs succeeded (product path(s) should remain via bind)"
+    else
+      lab_log "WARN EFS: IT umount /efs failed (common: bind mounts still reference tree; /efs may stay visible — expect IT note)"
+    fi
+  else
+    lab_log "EFS: IT umount /efs skipped (lab_efs_tools_mount_codes empty — root only)"
+  fi
+  if command -v findmnt >/dev/null 2>&1 && findmnt -n /efs >/dev/null 2>&1; then
+    lab_log "EFS: SUMMARY OK — /efs still mounted ($(findmnt -n -o SOURCE,FSTYPE /efs 2>/dev/null | tr '\n' ' '))"
+  elif grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
+    lab_log "EFS: SUMMARY OK — /efs nfs in /proc/mounts"
+  elif [ -n "$(echo $TOOLS_LIST | tr -d '[:space:]')" ] && command -v findmnt >/dev/null 2>&1; then
+    lab_log "EFS: SUMMARY OK — /efs umounted per IT; check findmnt /PD /DV /AL for bind(s)"
+  else
+    lab_log "EFS: SUMMARY OK — nfs root configured (no tool binds requested)"
+  fi
 else
   lab_log "EFS: SUMMARY FAIL — /efs not mounted. DNS: enable VPC DNS + same VPC as EFS. IP fallback: set lab_efs_aws_ip_fallback=true and grant elasticfilesystem:DescribeMountTargets on the instance role."
 fi
