@@ -76,6 +76,7 @@ resource "aws_instance" "CentOS8-AMD" {
     lab_efs_nfs_host                      = var.lab_efs_nfs_host
     lab_efs_tools_mount_codes             = var.lab_efs_tools_mount_codes
     lab_efs_aws_ip_fallback               = var.lab_efs_aws_ip_fallback
+    lab_efs_mount_target_ip               = var.lab_efs_mount_target_ip
     lab_efs_tool_profile_b64             = var.lab_efs_tool_profile_b64
     lab_ssh_public_key_b64 = base64encode(
       trimspace(tls_private_key.master_key_gen.public_key_openssh),

@@ -388,25 +388,58 @@ fi
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
 EFS_DNS='${trimspace(lab_efs_nfs_host)}'
 EFS_SRC="$${EFS_DNS}:/"
+EFS_STATIC_IP='${trimspace(lab_efs_mount_target_ip)}'
 TOOLS_LIST='${join(" ", lab_efs_tools_mount_codes)}'
-lab_log "EFS: attempting root nfs4 mount for $${EFS_DNS} (DNS then optional IP fallback; IT: fstab + bind /efs/tools/<code>→/<code> + verify + umount /efs; failures non-fatal)"
+# IT runbook (root only): vi /etc/fstab → mkdir /efs → mount /efs → bind tools → verify → umount /efs.
+# cloud-init runs as root; learners use ssm-user and need sudo for manual mount/fstab edits.
+lab_efs_apply_fstab() {
+  local server="$1"
+  [ -n "$server" ] || return 1
+  sed -i '/# BEGIN-lab-bootstrap-efs/,/# END-lab-bootstrap-efs/d' /etc/fstab 2>/dev/null || true
+  {
+    echo "# BEGIN-lab-bootstrap-efs (IT: root nfs4 + product bind mounts; Terraform user-data)"
+    echo "$${server}:/ /efs nfs4 nfsvers=4.1,defaults,_netdev 0 0"
+    for c in $TOOLS_LIST; do
+      [ -z "$c" ] && continue
+      echo "/efs/tools/$c /$c none bind 0 0"
+    done
+    echo "# END-lab-bootstrap-efs"
+  } >>/etc/fstab
+  lab_log "EFS: wrote /etc/fstab ($${server}:/ /efs nfs4 nfsvers=4.1,defaults,_netdev)"
+}
+lab_efs_nfs_mounted() {
+  grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null
+}
+lab_log "EFS: IT flow for $${EFS_DNS} (static_ip=$${EFS_STATIC_IP:-none}; uid=$$(id -u); cloud-init=root — same as sudo on instance)"
 mkdir -p /efs
-if command -v getent >/dev/null 2>&1; then
-  lab_log "EFS: DNS getent ahosts $${EFS_DNS}: $(getent ahosts "$${EFS_DNS}" 2>&1 | head -n 3 | tr '\n' ' ' | head -c 220)"
-elif command -v host >/dev/null 2>&1; then
-  lab_log "EFS: DNS host $${EFS_DNS}: $(host "$${EFS_DNS}" 2>&1 | head -n 3 | tr '\n' ' ' | head -c 220)"
-else
-  lab_log "EFS: DNS preflight skipped (no getent/host yet)"
-fi
-if command -v timeout >/dev/null 2>&1; then
-  if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport \
-    "$${EFS_SRC}" /efs 2>&1; then
-    lab_log "EFS: mounted root on /efs via DNS ($${EFS_SRC})"
-  else
-    lab_log "WARN EFS: root mount via DNS failed (will try IP fallback if enabled)"
+if [ -n "$EFS_STATIC_IP" ]; then
+  lab_efs_apply_fstab "$EFS_STATIC_IP"
+  if command -v timeout >/dev/null 2>&1; then
+    # Match IT exactly: fstab line then `mount /efs` (reads nfsvers=4.1,defaults,_netdev from fstab).
+    lab_log "EFS: mount /efs (reads fstab; same as IT: sudo mount /efs)"
+    if timeout 90 mount /efs 2>&1; then
+      lab_log "EFS: mounted /efs via fstab (mount /efs)"
+    elif timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport "$${EFS_STATIC_IP}:/" /efs 2>&1; then
+      lab_log "EFS: mounted /efs via explicit nfs4 ($${EFS_STATIC_IP}:/) after mount /efs failed"
+    else
+      lab_log "WARN EFS: mount /efs failed (fstab present — retry: sudo mount /efs)"
+    fi
   fi
-else
-  lab_log "WARN EFS: coreutils 'timeout' missing; skipping EFS mount to avoid blocking bootstrap"
+fi
+if ! lab_efs_nfs_mounted; then
+  if command -v getent >/dev/null 2>&1; then
+    lab_log "EFS: DNS getent ahosts $${EFS_DNS}: $(getent ahosts "$${EFS_DNS}" 2>&1 | head -n 3 | tr '\n' ' ' | head -c 220)"
+  elif command -v host >/dev/null 2>&1; then
+    lab_log "EFS: DNS host $${EFS_DNS}: $(host "$${EFS_DNS}" 2>&1 | head -n 3 | tr '\n' ' ' | head -c 220)"
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport \
+      "$${EFS_SRC}" /efs 2>&1; then
+      lab_log "EFS: mounted root on /efs via DNS ($${EFS_SRC})"
+    else
+      lab_log "WARN EFS: root mount via DNS failed"
+    fi
+  fi
 fi
 %{ if lab_efs_aws_ip_fallback ~}
 if ! grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
@@ -420,24 +453,31 @@ if ! grep -qE '[[:space:]]/efs[[:space:]]+nfs' /proc/mounts 2>/dev/null; then
   else
     MAC_IMDS=$(curl -sf --max-time 3 -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "http://169.254.169.254/latest/meta-data/mac" || true)
     SUBNET_IMDS=$(curl -sf --max-time 3 -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "http://169.254.169.254/latest/meta-data/network/interfaces/macs/$${MAC_IMDS}/subnet-id" || true)
+    EFS_MT_ERR=$(mktemp 2>/dev/null || echo /tmp/efs-mt-err)
     MT_IP=$(aws efs describe-mount-targets --file-system-id "$EFS_FSID" --region "$REGION" --output text \
-      --query "MountTargets[?SubnetId=='$SUBNET_IMDS' && LifeCycleState=='available'].IpAddress" 2>/dev/null | awk 'NF{print; exit}')
+      --query "MountTargets[?SubnetId=='$SUBNET_IMDS' && LifeCycleState=='available'].IpAddress" 2>"$EFS_MT_ERR" | awk 'NF{print; exit}')
     if [ -z "$MT_IP" ] || [ "$MT_IP" = "None" ]; then
       MT_IP=$(aws efs describe-mount-targets --file-system-id "$EFS_FSID" --region "$REGION" --output text \
-        --query "MountTargets[?LifeCycleState=='available'].IpAddress" 2>/dev/null | awk 'NF{print; exit}')
+        --query "MountTargets[?LifeCycleState=='available'].IpAddress" 2>>"$EFS_MT_ERR" | awk 'NF{print; exit}')
     fi
     if [ -n "$MT_IP" ] && [ "$MT_IP" != "None" ]; then
       lab_log "EFS: using mount-target IP $${MT_IP} (subnet=$SUBNET_IMDS fsid=$EFS_FSID)"
+      if ! grep -q 'BEGIN-lab-bootstrap-efs' /etc/fstab 2>/dev/null; then
+        lab_efs_apply_fstab "$MT_IP"
+      fi
       if command -v timeout >/dev/null 2>&1; then
-        if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport "$${MT_IP}:/" /efs 2>&1; then
+        if timeout 90 mount /efs 2>&1; then
+          lab_log "EFS: mounted /efs via fstab (API-resolved IP)"
+        elif timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport "$${MT_IP}:/" /efs 2>&1; then
           lab_log "EFS: mounted root on /efs via mount-target IP ($${MT_IP}:/)"
         else
           lab_log "WARN EFS: root mount via IP failed"
         fi
       fi
     else
-      lab_log "WARN EFS: DescribeMountTargets returned no IP (IAM needs elasticfilesystem:DescribeMountTargets; EFS mount targets must exist in this VPC/region)"
+      lab_log "WARN EFS: DescribeMountTargets returned no IP (subnet=$SUBNET_IMDS fsid=$EFS_FSID). aws: $(head -c 300 "$EFS_MT_ERR" 2>/dev/null | tr '\n' ' '). Fix: grant LabSSMRole elasticfilesystem:DescribeMountTargets, set lab_efs_mount_target_ip, or enable VPC DNS."
     fi
+    rm -f "$EFS_MT_ERR" 2>/dev/null || true
   fi
 fi
 %{ endif ~}
@@ -458,28 +498,20 @@ if [ "$EFS_IT_MOUNTED" = true ]; then
       lab_log "WARN EFS: mkdir /efs/tools/$c failed (permissions or read-only)"
     fi
   done
-  EFS_LINE=""
-  if command -v findmnt >/dev/null 2>&1; then
-    EFS_LINE=$(findmnt -n -o SOURCE /efs 2>/dev/null || true)
-  fi
-  if [ -z "$EFS_LINE" ]; then
-    EFS_LINE=$(awk '$2=="/efs" && ($3=="nfs4" || $3=="nfs") {print $1; exit}' /proc/mounts 2>/dev/null || true)
-  fi
-  EFS_SERVER="$${EFS_LINE%%:/*}"
-  if [ -n "$EFS_SERVER" ] && [ -n "$EFS_LINE" ]; then
-    sed -i '/# BEGIN-lab-bootstrap-efs/,/# END-lab-bootstrap-efs/d' /etc/fstab 2>/dev/null || true
-    {
-      echo "# BEGIN-lab-bootstrap-efs (IT: root nfs4 + product bind mounts; do not edit by hand — Terraform user-data)"
-      echo "$${EFS_SERVER}:/ /efs nfs4 nfsvers=4.1,defaults,_netdev 0 0"
-      for c in $TOOLS_LIST; do
-        [ -z "$c" ] && continue
-        echo "/efs/tools/$c /$c none bind 0 0"
-      done
-      echo "# END-lab-bootstrap-efs"
-    } >>/etc/fstab
-    lab_log "EFS: appended IT-style fstab (root + $(echo $TOOLS_LIST | wc -w) bind line(s))"
-  else
-    lab_log "WARN EFS: could not derive nfs SOURCE for fstab (findmnt/proc)"
+  if ! grep -q 'BEGIN-lab-bootstrap-efs' /etc/fstab 2>/dev/null; then
+    EFS_LINE=""
+    if command -v findmnt >/dev/null 2>&1; then
+      EFS_LINE=$(findmnt -n -o SOURCE /efs 2>/dev/null || true)
+    fi
+    if [ -z "$EFS_LINE" ]; then
+      EFS_LINE=$(awk '$2=="/efs" && ($3=="nfs4" || $3=="nfs") {print $1; exit}' /proc/mounts 2>/dev/null || true)
+    fi
+    EFS_SERVER="$${EFS_LINE%%:/*}"
+    if [ -n "$EFS_SERVER" ] && [ -n "$EFS_LINE" ]; then
+      lab_efs_apply_fstab "$EFS_SERVER"
+    else
+      lab_log "WARN EFS: could not derive nfs SOURCE for fstab (findmnt/proc)"
+    fi
   fi
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue

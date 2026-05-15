@@ -17,3 +17,5 @@ ami_id = "ami-066401294ec783ea4"
 # lab_efs_tools_mount_codes = ["DV"]
 # lab_efs_tools_mount_codes = ["AL"]
 # lab_efs_nfs_host = "fs-xxxx.efs.ap-south-1.amazonaws.com"
+# lab_efs_mount_target_ip = "10.10.3.41"
+# Backend: LAB_EFS_MOUNT_TARGET_IP=10.10.3.41 (passed at terraform apply)

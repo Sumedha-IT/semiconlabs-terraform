@@ -274,6 +274,14 @@ variable "lab_efs_aws_ip_fallback" {
   description = "If true and DNS mount fails, resolve mount-target IP via AWS API and mount nfs4 by IP. Instance role needs elasticfilesystem:DescribeMountTargets."
 }
 
+# Optional static mount-target IPv4 (e.g. 10.10.3.41). Used when VPC DNS and DescribeMountTargets both fail.
+# Set via Terraform tfvars or backend env LAB_EFS_MOUNT_TARGET_IP at apply time.
+variable "lab_efs_mount_target_ip" {
+  type        = string
+  default     = "10.10.3.41"
+  description = "EFS mount-target IPv4 for fstab + nfs4 mount when VPC DNS/API fallback fail. Override per env or set LAB_EFS_MOUNT_TARGET_IP in backend. Empty skips static IP path."
+}
+
 # Base64(JSON) from the app at apply time: { session_user, source_files[], ad_groups_any[] }.
 # User-data decodes after AD join + SSSD, optionally verifies id -Gn against ad_groups_any (OR),
 # then writes /etc/profile.d to `source` each existing path (e.g. /efs/tools/PD). Empty = skip.
