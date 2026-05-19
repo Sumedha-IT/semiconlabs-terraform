@@ -1,0 +1,23 @@
+# Production lab fleet (vpc-050163a42e255aae2) — copy to terraform.tfvars locally only; do not commit secrets.
+# Backend normally writes terraform.tfvars at apply time from .env (see Semiconlabs-backend/.env.production.example).
+
+lab_environment            = "production"
+ami_id                     = "ami-066401294ec783ea4"
+instance_type              = "m6a.xlarge"
+subnet_id                  = "subnet-05d6c2809dcd0010d"   # pick one private lab subnet
+lab_security_group_id      = "sg-0653bee39065a9d2c"
+iam_instance_profile_name  = "slabs-prod-labssmRole"
+associate_public_ip_address = false
+
+ad_domain                  = "semiconlabs.com"
+ad_directory_id            = "d-9f6752c48f"
+ad_dns_ips                 = ["10.50.10.221", "10.50.11.231"]
+ad_join_user               = "admin"
+# Prefer realm UPN if adcli KDC errors: ad_join_user = "admin@SEMICONLABS.COM"
+# ad_join_password via SSM only — never commit:
+# ad_join_password_ssm_parameter_name = "/semiconlabs/prod/lab/ad-join-password"
+ad_join_mechanism          = "realm_userdata"
+enable_ad_join             = true
+
+# lab_efs_nfs_host           = "fs-xxxx.efs.ap-south-1.amazonaws.com"
+# lab_efs_mount_target_ip    = "10.50.x.x"

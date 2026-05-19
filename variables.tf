@@ -49,6 +49,18 @@ variable "subnet_id" {
   default     = "subnet-0c4d6990bb08a09b2"
 }
 
+variable "lab_security_group_id" {
+  description = "Security group attached to lab EC2 (VPC-scoped). Override per env via terraform.tfvars or backend LAB_SECURITY_GROUP_ID."
+  type        = string
+  default     = "sg-04430765f75fb1634"
+}
+
+variable "iam_instance_profile_name" {
+  description = "EC2 instance profile for SSM / AD join / EFS API (e.g. LabSSMRole or slabs-prod-labssmRole)."
+  type        = string
+  default     = "LabSSMRole"
+}
+
 variable "associate_public_ip_address" {
   description = "Whether to attach a public IPv4 address to the lab instance"
   type        = bool
@@ -139,7 +151,7 @@ variable "enable_ad_join" {
 }
 
 variable "ad_domain" {
-  description = "AD DNS domain / Kerberos realm name. Matches AD_DOMAIN in Semiconlabs-backend .env (sumedhalabs.com)."
+  description = "AD DNS domain / Kerberos realm name. Matches AD_DOMAIN in Semiconlabs-backend .env (staging: sumedhalabs.com; production: semiconlabs.com)."
   type        = string
   default     = "sumedhalabs.com"
 }

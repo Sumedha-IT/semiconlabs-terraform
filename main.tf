@@ -16,11 +16,6 @@ locals {
   lab_instance_display_name = var.lab_environment == "production" ? "SemiconLab-Prod-Instance-${var.suffix}" : "SemiconLab-Staging-Instance-${var.suffix}"
 }
 
-# Importing the SG
-data "aws_security_group" "TerraformSecurityGroup" {
-  id = "sg-04430765f75fb1634"
-}
-
 # Generate an SSH key pair
 resource "tls_private_key" "master_key_gen" {
   algorithm = "RSA"
@@ -41,8 +36,8 @@ resource "aws_instance" "CentOS8-AMD" {
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   associate_public_ip_address = var.associate_public_ip_address
-  vpc_security_group_ids = [data.aws_security_group.TerraformSecurityGroup.id]
-  iam_instance_profile   = "LabSSMRole"
+  vpc_security_group_ids = [var.lab_security_group_id]
+  iam_instance_profile   = var.iam_instance_profile_name
 
   root_block_device {
     volume_size           = var.root_volume_size

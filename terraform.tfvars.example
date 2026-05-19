@@ -10,6 +10,9 @@ ami_id = "ami-066401294ec783ea4"
 # Optional overrides — defaults also live in variables.tf
 # instance_type = "m6a.xlarge"
 # subnet_id     = "subnet-0c4d6990bb08a09b2"
+# lab_security_group_id     = "sg-04430765f75fb1634"
+# iam_instance_profile_name = "LabSSMRole"
+# Production template: terraform.tfvars.production.example
 # Default SSSD shell is /bin/tcsh; use bash if needed:
 # ad_sssd_default_shell = "/bin/bash"
 # EFS: DNS only (see variables.tf defaults). Mount only one tool tree for group-scoped labs:
