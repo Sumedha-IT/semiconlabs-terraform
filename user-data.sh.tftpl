@@ -959,11 +959,14 @@ if [ -z "$${JOIN_PW}" ] || [ "$${JOIN_PW}" = "None" ]; then
 else
   JOIN_PW=$(printf '%s' "$${JOIN_PW}" | tr -d '\r')
 %{ if length(ad_dns_ips) > 0 ~}
+  mkdir -p /etc/krb5.conf.d
   {
+    echo "includedir /etc/krb5.conf.d"
+    echo ""
     echo "[libdefaults]"
     echo "default_realm = ${ad_krb5_realm}"
-    echo "dns_lookup_realm = true"
-    echo "dns_lookup_kdc = true"
+    echo "dns_lookup_realm = false"
+    echo "dns_lookup_kdc = false"
     echo "rdns = false"
     echo ""
     echo "[realms]"
