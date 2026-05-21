@@ -257,11 +257,16 @@ lab_finalize_sssd_for_dcv() {
   lab_log "finalize_sssd_for_dcv: done (sssd oddjob ready for DCV pam_sss)"
 }
 
-# Strip stale lab/EFS fstab snippets; user-data reapplies IT block after a successful nfs mount (see BEGIN-lab-bootstrap-efs).
-sed -i '/efs/d' /etc/fstab || true
+# IT: do NOT add 10.x.x.x:/ /efs lines to /etc/fstab (breaks reboot). Remove legacy snippets only.
+sed -i '/# BEGIN-lab-bootstrap-efs/,/# END-lab-bootstrap-efs/d' /etc/fstab 2>/dev/null || true
+sed -i '/[[:space:]]\/efs[[:space:]]/d' /etc/fstab 2>/dev/null || true
+sed -i '\|/[[:space:]]*/PD[[:space:]]|d' /etc/fstab 2>/dev/null || true
+sed -i '\|/[[:space:]]*/DV[[:space:]]|d' /etc/fstab 2>/dev/null || true
+sed -i '\|/[[:space:]]*/AL[[:space:]]|d' /etc/fstab 2>/dev/null || true
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
-sed -i '\|${trimspace(lab_efs_nfs_host)}|d' /etc/fstab || true
+sed -i '\|${trimspace(lab_efs_nfs_host)}|d' /etc/fstab 2>/dev/null || true
 %{ endif ~}
+lab_log "EFS fstab: removed legacy entries only (no new fstab lines — PD/DV/AL via lab-efs-mount.service)"
 
 # DO NOT call `cloud-init status --wait` here. This script IS executed by
 # cloud-init's modules-final stage, so waiting for cloud-init to reach `done`
@@ -381,8 +386,8 @@ else
   lab_log "WARN tcsh not installed — install tcsh package for learner terminals"
 fi
 
-# EFS: mount after network-online via systemd (NOT /etc/fstab). Old flow wrote fstab + umount /efs
-# after bind — on Stop/Start reboot systemd mounted /efs before NFS was ready → emergency mode.
+# EFS: runtime nfs4 mount only (IT: no vi /etc/fstab line for 10.x:/ /efs). lab-efs-mount.service
+# mounts server:/tools/PD → /PD (etc.) after network-online; lab-efs-tool-env.sh sources pdsource/….
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
 mkdir -p /etc/lab
 cat >/etc/lab/efs-mount.env <<'LABEFSENV'
@@ -549,14 +554,7 @@ lab_efs_bind_tools() {
   lab_efs_bind_tools_via_root
   lab_efs_hide_efs_root
 }
-# Do not use /etc/fstab for EFS (systemd local-fs would block boot on NFS failure).
-sed -i '/# BEGIN-lab-bootstrap-efs/,/# END-lab-bootstrap-efs/d' /etc/fstab 2>/dev/null || true
-sed -i '/[[:space:]]\/efs[[:space:]]/d' /etc/fstab 2>/dev/null || true
-for c in $TOOLS_LIST; do
-  [ -z "$c" ] && continue
-  sed -i "\|[[:space:]]/$c[[:space:]]|d" /etc/fstab 2>/dev/null || true
-done
-lab_efs_log "start EFS_DNS=$EFS_DNS static_ip=${EFS_STATIC_IP:-none} tools=[$TOOLS_LIST]"
+lab_efs_log "start EFS_DNS=$EFS_DNS static_ip=${EFS_STATIC_IP:-none} tools=[$TOOLS_LIST] (no fstab; explicit nfs4 mount)"
 # Try direct subpath mounts first (no /efs root — learners only see assigned /PD|/DV|/AL).
 if [ -n "$(echo $TOOLS_LIST | tr -d '[:space:]')" ]; then
   _srv=$(lab_efs_resolve_server 2>/dev/null || true)
@@ -718,7 +716,7 @@ LABEFSSVC
 
 systemctl daemon-reload || true
 systemctl enable lab-efs-mount.service 2>/dev/null || true
-lab_log "EFS: enabled lab-efs-mount.service (no fstab; direct /PD or bind+umount /efs — learners do not browse full EFS)"
+lab_log "EFS: enabled lab-efs-mount.service (IT: no /etc/fstab EFS line; PD/DV/AL + vendor source at boot)"
 if /usr/local/sbin/lab-efs-mount.sh; then
   lab_log "EFS: bootstrap mount OK (see /var/log/lab-bootstrap.log)"
 else
