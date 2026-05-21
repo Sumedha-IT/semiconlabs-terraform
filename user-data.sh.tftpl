@@ -404,6 +404,11 @@ fi
 # EFS: runtime nfs4 mount only (IT: no vi /etc/fstab line for 10.x:/ /efs). lab-efs-mount.service
 # mounts server:/tools/PD → /PD (etc.) after network-online; lab-efs-tool-env.sh sources pdsource/….
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
+# Golden AMI often ships /tools as a regular file — blocks nfs4 mount of EFS :/tools.
+if [ -e /tools ] && [ ! -d /tools ]; then
+  lab_log "AMI: /tools is not a directory ($(file -b /tools 2>/dev/null || echo unknown)); moving aside for EFS"
+  mv /tools /tools.ami-file.bak 2>/dev/null || rm -f /tools 2>/dev/null || true
+fi
 mkdir -p /etc/lab
 cat >/etc/lab/efs-mount.env <<'LABEFSENV'
 EFS_DNS='${trimspace(lab_efs_nfs_host)}'
@@ -436,7 +441,7 @@ lab_efs_tool_bind_mounted() {
 lab_efs_mount_root() {
   local server="$1"
   [ -n "$server" ] || return 1
-  mkdir -p /efs
+  lab_efs_prepare_mount_point /efs || return 1
   if lab_efs_nfs_mounted; then
     return 0
   fi
@@ -530,8 +535,21 @@ lab_efs_bind_tools_via_root() {
     fi
   done
 }
-# pdsource/alsource reference absolute paths like /tools/yam4tp (siblings of /tools/PD on EFS).
-# Direct mount server:/tools/PD -> /PD alone does not create /tools; mount :/tools or symlink.
+# pdsource uses /tools/yam4tp (EFS sibling of /tools/PD) and ICC2_HOME=/efs/tools/PD/...
+lab_efs_prepare_mount_point() {
+  local mp="$1"
+  [ -n "$mp" ] || return 1
+  if [ -d "$mp" ]; then
+    return 0
+  fi
+  if [ -e "$mp" ]; then
+    local bak="$${mp}.lab-pre-mount"
+    lab_efs_log "WARN $mp blocks nfs mount (not a directory); moving to $bak"
+    mv "$mp" "$bak" 2>/dev/null || rm -f "$mp" 2>/dev/null || true
+  fi
+  mkdir -p "$mp" || return 1
+  return 0
+}
 lab_efs_tools_prefix_mounted() {
   mountpoint -q /tools 2>/dev/null || grep -qE '[[:space:]]/tools[[:space:]]+nfs' /proc/mounts 2>/dev/null
 }
@@ -539,7 +557,7 @@ lab_efs_mount_tools_prefix() {
   local server="$1"
   [ -n "$server" ] || return 1
   lab_efs_tools_prefix_mounted && return 0
-  mkdir -p /tools
+  lab_efs_prepare_mount_point /tools || return 1
   if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport \
     "$${server}:/tools" /tools 2>&1 | tee -a "$LOG"; then
     lab_efs_log "mounted $${server}:/tools -> /tools (vendor paths e.g. /tools/yam4tp for pdsource)"
@@ -549,27 +567,45 @@ lab_efs_mount_tools_prefix() {
   lab_efs_log "WARN mount $${server}:/tools -> /tools failed"
   return 1
 }
+# pdsource hard-codes /efs/tools/PD/... — map to /PD when full /efs is not mounted.
+lab_efs_ensure_legacy_efs_paths() {
+  local c
+  lab_efs_prepare_mount_point /efs || return 0
+  mkdir -p /efs/tools 2>/dev/null || true
+  for c in $TOOLS_LIST; do
+    [ -z "$c" ] && continue
+    if [ -d "/$c" ] && [ ! -e "/efs/tools/$c" ]; then
+      ln -sfn "/$c" "/efs/tools/$c" 2>/dev/null && \
+        lab_efs_log "legacy /efs/tools/$c -> /$c (ICC2_HOME and vendor paths)"
+    fi
+  done
+  chmod 755 /efs /efs/tools 2>/dev/null || true
+}
+lab_efs_mount_tools_extra_subpaths() {
+  local server="$1" extra
+  [ -n "$server" ] || return 1
+  lab_efs_tools_prefix_mounted && return 0
+  lab_efs_prepare_mount_point /tools || return 1
+  for extra in yam4tp; do
+    [ -e "/tools/$extra" ] && continue
+    lab_efs_prepare_mount_point "/tools/$extra" || continue
+    if timeout 90 mount -t nfs4 -o nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport \
+      "$${server}:/tools/$${extra}" "/tools/$${extra}" 2>&1 | tee -a "$LOG"; then
+      lab_efs_log "mounted $${server}:/tools/$${extra} -> /tools/$${extra}"
+    fi
+  done
+}
 lab_efs_tools_compat_symlinks() {
   local c sub base
-  mkdir -p /tools
+  lab_efs_prepare_mount_point /tools || return 0
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
     if [ -d "/$c" ] && [ ! -e "/tools/$c" ]; then
-      ln -sfn "/$c" "/tools/$c" 2>/dev/null || true
-      lab_efs_log "compat symlink /tools/$c -> /$c"
+      if ln -sfn "/$c" "/tools/$c" 2>/dev/null; then
+        lab_efs_log "compat symlink /tools/$c -> /$c"
+      fi
     fi
   done
-  if [ -d /PD ]; then
-    for sub in /PD/*; do
-      [ -e "$sub" ] || continue
-      base=$(basename "$sub")
-      case "$base" in lost+found) continue ;; esac
-      if [ ! -e "/tools/$base" ]; then
-        ln -sfn "$sub" "/tools/$base" 2>/dev/null || true
-        lab_efs_log "compat symlink /tools/$base -> $sub"
-      fi
-    done
-  fi
 }
 lab_efs_ensure_tools_prefix() {
   local server
@@ -577,9 +613,12 @@ lab_efs_ensure_tools_prefix() {
   [ -n "$server" ] || server="$EFS_STATIC_IP"
   [ -n "$server" ] || return 0
   if lab_efs_mount_tools_prefix "$server"; then
+    lab_efs_ensure_legacy_efs_paths
     return 0
   fi
+  lab_efs_mount_tools_extra_subpaths "$server"
   lab_efs_tools_compat_symlinks
+  lab_efs_ensure_legacy_efs_paths
 }
 # IT pattern: after binds (or direct subpath mounts), drop /efs so learners browse /PD only — not via fstab.
 lab_efs_hide_efs_root() {
@@ -772,6 +811,13 @@ foreach f (`grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[
     source "$f"
   endif
 end
+# pdsource sets ICC2_HOME under /efs/tools/PD — redirect to /PD when /efs is not nfs-mounted.
+if ( $$?ICC2_HOME ) then
+  if ( ! -d "$$ICC2_HOME" ) then
+    set _iccfix = `echo "$$ICC2_HOME" | sed 's|^/efs/tools/PD|/PD|'`
+    if ( -d "$$_iccfix" ) setenv ICC2_HOME "$$_iccfix"
+  endif
+endif
 endif
 ZZLABEFSCSH
 chmod 644 /etc/profile.d/zz-lab-efs-tools.csh 2>/dev/null || true
