@@ -3,7 +3,7 @@
 #      terraform console -var="suffix=ci" -var="instance_name=ci" -non-interactive
 #      > length(local.ci_user_data_rendered)
 locals {
-  ci_user_data_rendered = templatefile("${path.module}/user-data.sh.tftpl", {
+  ci_user_data_rendered      = templatefile("${path.module}/user-data.sh.tftpl", {
     aws_region                            = var.aws_region
     suffix                                = var.suffix
     enable_ad_join                        = var.enable_ad_join
@@ -31,9 +31,15 @@ locals {
     lab_efs_tool_profile_b64            = var.lab_efs_tool_profile_b64
     lab_ssh_public_key_b64                = base64encode("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCi-check-only")
   })
+  ci_user_data_gzip_b64 = base64gzip(local.ci_user_data_rendered)
 }
 
 output "ci_user_data_template_bytes" {
   value       = length(local.ci_user_data_rendered)
-  description = "Non-zero when user-data.sh.tftpl templatefile() succeeds (run validate/console before apply)."
+  description = "Uncompressed templatefile() size (informational; EC2 limit applies to gzip payload)."
+}
+
+output "ci_user_data_gzip_b64_chars" {
+  value       = length(local.ci_user_data_gzip_b64)
+  description = "Wire size of user_data_base64; gzip payload bytes = base64 decode length (see validate-user-data-template.ps1)."
 }

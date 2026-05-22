@@ -46,7 +46,8 @@ resource "aws_instance" "CentOS8-AMD" {
   }
 
 
-  user_data = templatefile("${path.module}/user-data.sh.tftpl", {
+  # EC2 user_data is capped at 16 KiB; bootstrap renders ~50+ KiB — gzip+base64 (cloud-init decompresses).
+  user_data_base64 = base64gzip(templatefile("${path.module}/user-data.sh.tftpl", {
     aws_region                            = var.aws_region
     suffix                                = var.suffix
     enable_ad_join                        = var.enable_ad_join
@@ -77,7 +78,7 @@ resource "aws_instance" "CentOS8-AMD" {
     lab_ssh_public_key_b64 = base64encode(
       trimspace(tls_private_key.master_key_gen.public_key_openssh),
     )
-  })
+  }))
   tags = {
     Name         = local.lab_instance_display_name
     map-migrated = "DADS45OSDL"
