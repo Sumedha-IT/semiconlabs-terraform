@@ -644,6 +644,32 @@ lab_efs_complete_vendor_layout() {
   lab_efs_ensure_legacy_efs_paths
   lab_efs_log "layout: PD|DV|AL=/$TOOLS_LIST /tools=nfs /efs/tools/<code>=symlink or share"
 }
+# Shared EFS: binaries may be 755 but parent dirs 750 block AD UIDs (staging/prod AD both OK on one EFS).
+lab_efs_open_binaries_for_nfs_users() {
+  local p n=0
+  for p in /PD /AL /DV /tools; do
+    [ -d "$p" ] || continue
+    chmod a+rx "$p" 2>/dev/null && n=$((n + 1))
+  done
+  for p in /PD/snps /PD/cdn /AL/cdn /DV/snps /DV/cdn /tools/synopsys /tools/cad2k /tools/cad; do
+    [ -d "$p" ] || continue
+    if chmod -R a+rX "$p" 2>/dev/null; then
+      lab_efs_log "EFS chmod a+rX $p"
+      n=$((n + 1))
+    fi
+  done
+  if mountpoint -q /efs 2>/dev/null && [ -d /efs/tools ]; then
+    chmod a+rx /efs /efs/tools 2>/dev/null || true
+    for p in /efs/tools/PD /efs/tools/PD/snps /efs/tools/PD/cdn /efs/tools/AL /efs/tools/DV; do
+      [ -d "$p" ] || continue
+      if chmod -R a+rX "$p" 2>/dev/null; then
+        lab_efs_log "EFS chmod a+rX $p"
+        n=$((n + 1))
+      fi
+    done
+  fi
+  lab_efs_log "EFS learner traverse+execute: updated $n trees (one EFS / many AD domains — numeric UID only)"
+}
 lab_efs_verify_required_mounts() {
   local c fail=0
   for c in $TOOLS_LIST; do
@@ -756,6 +782,9 @@ while [ "$_pass" -le "$_max_pass" ]; do
       lab_efs_log "findmnt /tools: $(findmnt -n /tools 2>/dev/null || echo N/A)"
     fi
     lab_efs_log "SUMMARY OK (pass $_pass)"
+%{ if lab_efs_open_tool_execute ~}
+    lab_efs_open_binaries_for_nfs_users || true
+%{ endif ~}
     exit 0
   fi
   sleep 20

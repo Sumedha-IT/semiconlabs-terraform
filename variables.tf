@@ -315,6 +315,12 @@ variable "lab_efs_tool_profile_b64" {
   description = "Base64(JSON): { session_user, source_files[], ad_groups_any[] }. Backend sets when lab tool warrants EFS tool env (e.g. PD)."
 }
 
+variable "lab_efs_open_tool_execute" {
+  type        = bool
+  default     = true
+  description = "After EFS mount, chmod a+rX on vendor bin/linux64 trees so AD learners (high NFS UIDs) can execute ICC2/genus/etc. Persists on shared EFS."
+}
+
 #resource "aws_iam_instance_profile" "ssm_profile" {
 #  name = "ssm-profile"
 #  role = "AmazonSSMManagedInstanceCore"

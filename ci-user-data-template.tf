@@ -29,6 +29,7 @@ locals {
     lab_efs_aws_ip_fallback               = var.lab_efs_aws_ip_fallback
     lab_efs_mount_target_ip               = var.lab_efs_mount_target_ip
     lab_efs_tool_profile_b64            = var.lab_efs_tool_profile_b64
+    lab_efs_open_tool_execute             = var.lab_efs_open_tool_execute
     lab_ssh_public_key_b64                = ""
   })
   ci_user_data_gzip_b64 = base64gzip(local.ci_user_data_rendered)
