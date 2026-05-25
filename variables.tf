@@ -318,7 +318,7 @@ variable "lab_efs_tool_profile_b64" {
 variable "lab_efs_open_tool_execute" {
   type        = bool
   default     = true
-  description = "After EFS mount, chmod a+rX on vendor bin/linux64 trees so AD learners (high NFS UIDs) can execute ICC2/genus/etc. Persists on shared EFS."
+  description = "After EFS mount, chmod a+rX on vendor bin/linux64 trees so AD learners (high NFS UIDs) can execute ICC2/genus/etc. Runs in background during user-data so LabBootstrap/AD join are not blocked on multi-TB NFS trees."
 }
 
 #resource "aws_iam_instance_profile" "ssm_profile" {

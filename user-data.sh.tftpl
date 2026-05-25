@@ -645,30 +645,50 @@ lab_efs_complete_vendor_layout() {
   lab_efs_log "layout: PD|DV|AL=/$TOOLS_LIST /tools=nfs /efs/tools/<code>=symlink or share"
 }
 # Shared EFS: binaries may be 755 but parent dirs 750 block AD UIDs (staging/prod AD both OK on one EFS).
+# Recursive chmod on multi-TB NFS trees can run for hours and block cloud-init — never do that synchronously
+# during bootstrap (LabBootstrap=READY / AD join must proceed).
+lab_efs_chmod_tree() {
+  local p="$1" rc=0
+  [ -d "$p" ] || return 0
+  lab_efs_log "EFS chmod -R a+rX start: $p"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 600 chmod -R a+rX "$p" 2>/dev/null || rc=$?
+  else
+    chmod -R a+rX "$p" 2>/dev/null || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    lab_efs_log "EFS chmod a+rX OK: $p"
+    return 0
+  fi
+  if [ "$rc" -eq 124 ] 2>/dev/null || [ "$rc" -eq 143 ] 2>/dev/null; then
+    lab_efs_log "WARN EFS chmod timed out (600s) on $p — tree may still be traversing in background; top-level a+rx already applied"
+  else
+    lab_efs_log "WARN EFS chmod failed rc=$rc on $p"
+  fi
+  return 1
+}
 lab_efs_open_binaries_for_nfs_users() {
   local p n=0
+  lab_efs_log "EFS learner traverse+execute: start (top-level a+rx, then recursive vendor trees)"
   for p in /PD /AL /DV /tools; do
     [ -d "$p" ] || continue
     chmod a+rx "$p" 2>/dev/null && n=$((n + 1))
   done
   for p in /PD/snps /PD/cdn /AL/cdn /DV/snps /DV/cdn /tools/synopsys /tools/cad2k /tools/cad; do
-    [ -d "$p" ] || continue
-    if chmod -R a+rX "$p" 2>/dev/null; then
-      lab_efs_log "EFS chmod a+rX $p"
-      n=$((n + 1))
-    fi
+    lab_efs_chmod_tree "$p" && n=$((n + 1)) || true
   done
   if mountpoint -q /efs 2>/dev/null && [ -d /efs/tools ]; then
     chmod a+rx /efs /efs/tools 2>/dev/null || true
     for p in /efs/tools/PD /efs/tools/PD/snps /efs/tools/PD/cdn /efs/tools/AL /efs/tools/DV; do
-      [ -d "$p" ] || continue
-      if chmod -R a+rX "$p" 2>/dev/null; then
-        lab_efs_log "EFS chmod a+rX $p"
-        n=$((n + 1))
-      fi
+      lab_efs_chmod_tree "$p" && n=$((n + 1)) || true
     done
   fi
-  lab_efs_log "EFS learner traverse+execute: updated $n trees (one EFS / many AD domains — numeric UID only)"
+  lab_efs_log "EFS learner traverse+execute: finished pass (updated $n trees; one EFS / many AD domains — numeric UID only)"
+}
+lab_efs_open_binaries_for_nfs_users_background() {
+  lab_efs_log "EFS learner chmod: deferring recursive a+rX to background (do not block LabBootstrap / AD join on NFS)"
+  nohup /usr/local/sbin/lab-efs-mount.sh --chmod-only >>"$LOG" 2>&1 &
+  lab_efs_log "EFS learner chmod: background pid=$! (log=$LOG)"
 }
 lab_efs_verify_required_mounts() {
   local c fail=0
@@ -767,6 +787,17 @@ lab_efs_bind_tools() {
   lab_efs_bind_tools_via_root
   lab_efs_hide_efs_root
 }
+# Background-only entry (bootstrap spawns this after SUMMARY OK).
+if [ "$${1:-}" = "--chmod-only" ]; then
+  lab_efs_log "mode=--chmod-only (background learner execute bits)"
+%{ if lab_efs_open_tool_execute ~}
+  lab_efs_open_binaries_for_nfs_users || true
+%{ else ~}
+  lab_efs_log "mode=--chmod-only skipped (lab_efs_open_tool_execute=false)"
+%{ endif ~}
+  exit 0
+fi
+
 lab_efs_log "start EFS_DNS=$EFS_DNS static_ip=$${EFS_STATIC_IP:-none} tools=[$TOOLS_LIST] (no fstab; remount every boot via lab-efs-mount.service)"
 _pass=1
 _max_pass=6
@@ -783,7 +814,7 @@ while [ "$_pass" -le "$_max_pass" ]; do
     fi
     lab_efs_log "SUMMARY OK (pass $_pass)"
 %{ if lab_efs_open_tool_execute ~}
-    lab_efs_open_binaries_for_nfs_users || true
+    lab_efs_open_binaries_for_nfs_users_background || true
 %{ endif ~}
     exit 0
   fi
