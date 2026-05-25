@@ -103,19 +103,15 @@ lab_install_efs_tool_profile_from_tf() {
     return 0
   fi
   /usr/local/sbin/lab-efs-tool-env.sh 2>/dev/null || true
+  lab_install_global_tcsh_tool_hook
   if [ -n "$${resolved}" ] && [ -s /etc/lab/efs-tool-sources.lst ]; then
-    uhome=$(getent passwd "$${resolved}" 2>/dev/null | awk -F: 'NR==1{print $6; exit}')
     uid=$(getent passwd "$${resolved}" 2>/dev/null | awk -F: 'NR==1{print $3; exit}')
-    gid=$(getent passwd "$${resolved}" 2>/dev/null | awk -F: 'NR==1{print $4; exit}')
-    if [ -n "$${uhome}" ] && [ -d "$${uhome}" ] && [ -n "$${uid}" ]; then
-      if ! grep -qF 'semiconlabs-lab-efs-tool-env' "$${uhome}/.tcshrc" 2>/dev/null; then
-        {
-          echo '# semiconlabs-lab-efs-tool-env'
-          echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
-        } >>"$${uhome}/.tcshrc"
-        chown "$${uid}:$${gid}" "$${uhome}/.tcshrc" 2>/dev/null || true
-        lab_log "efs_tool_profile: appended .tcshrc hook for $${resolved} ($${uhome})"
-      fi
+    if [ -n "$${uid}" ]; then
+      while IFS=: read -r _uname _uid _gid _uhome; do
+        [ "$${_uid}" = "$${uid}" ] || continue
+        [ -n "$${_uhome}" ] || continue
+        lab_patch_user_shell_hooks "$${_uname}" "$${_uid}" "$${_gid}" "$${_uhome}"
+      done < <(getent passwd 2>/dev/null || true)
     fi
   fi
   if [ -s /etc/lab/efs-tool-sources.lst ]; then
@@ -142,6 +138,34 @@ lab_install_efs_tool_profile_from_tf() {
     chmod 644 /etc/lab/efs-tool-profile-status.json 2>/dev/null || true
   fi
   lab_log "efs_tool_profile: installed vendor env via lab-efs-tool-env.sh ($(wc -l </etc/lab/efs-tool-sources.lst 2>/dev/null || echo 0) path(s))"
+}
+
+# Ensure every tcsh/csh session (DCV often uses short AD name, not UPN) loads vendor env.
+lab_install_global_tcsh_tool_hook() {
+  if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/csh.cshrc 2>/dev/null; then
+    {
+      echo ''
+      echo '# semiconlabs-lab-efs-tool-env'
+      echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
+    } >>/etc/csh.cshrc
+    lab_log "efs_tool_profile: hooked /etc/csh.cshrc -> zz-lab-efs-tools.csh"
+  fi
+}
+
+lab_patch_user_shell_hooks() {
+  local uname="$1" uid="$2" gid="$3" uhome="$4"
+  [ -n "$${uhome}" ] || return 0
+  install -d -m 700 -o "$${uid}" -g "$${gid}" "$${uhome}" 2>/dev/null || true
+  for rc in .tcshrc .cshrc; do
+    if ! grep -qF 'semiconlabs-lab-efs-tool-env' "$${uhome}/$${rc}" 2>/dev/null; then
+      {
+        echo '# semiconlabs-lab-efs-tool-env'
+        echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
+      } >>"$${uhome}/$${rc}"
+      chown "$${uid}:$${gid}" "$${uhome}/$${rc}" 2>/dev/null || true
+      lab_log "efs_tool_profile: appended $${rc} for $${uname} ($${uhome})"
+    fi
+  done
 }
 
 # Install AWS CLI v2 to /usr/local/bin. RPM awscli v1 often fails or mis-resolves region for
@@ -756,29 +780,28 @@ lab_te_source_candidates() {
   case "$code" in
     PD)
       u=pdsource
+      echo "/$code/$u"
+      echo "/efs/tools/$code/$u"
       echo "/$code/snps/$u"
       echo "/$code/cdn/$u"
-      echo "/$code/cdn/cdnsource"
-      echo "/$code/$u"
       echo "/efs/tools/$code/snps/$u"
       echo "/efs/tools/$code/cdn/$u"
-      echo "/efs/tools/$code/$u"
       ;;
     AL)
       u=alsource
-      echo "/$code/cdn/$u"
       echo "/$code/$u"
-      echo "/efs/tools/$code/cdn/$u"
       echo "/efs/tools/$code/$u"
+      echo "/$code/cdn/$u"
+      echo "/efs/tools/$code/cdn/$u"
       ;;
     DV)
       u=dvsource
+      echo "/$code/$u"
+      echo "/efs/tools/$code/$u"
       echo "/$code/snps/$u"
       echo "/$code/cdn/$u"
-      echo "/$code/$u"
       echo "/efs/tools/$code/snps/$u"
       echo "/efs/tools/$code/cdn/$u"
-      echo "/efs/tools/$code/$u"
       ;;
     *) return 1 ;;
   esac
@@ -802,14 +825,23 @@ if [ -n "$(echo $TOOLS_LIST | tr -d '[:space:]')" ]; then
   TOOLS_FROM_ENV="$TOOLS_LIST"
 fi
 : >/etc/lab/efs-tool-sources.lst
+LAB_EFS_HAS_EXTRA=0
 if [ -r /etc/lab/efs-tool-sources.extra.lst ]; then
   while IFS= read -r f || [ -n "$f" ]; do
     case "$f" in ''|'#'*) continue ;; esac
+    LAB_EFS_HAS_EXTRA=1
     if [ -f "$f" ]; then
       grep -qxF "$f" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$f" >>/etc/lab/efs-tool-sources.lst
+      lab_te_log "backend source -> $f (exists)"
+    else
+      grep -qxF "$f" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$f" >>/etc/lab/efs-tool-sources.lst
+      lab_te_log "WARN backend source -> $f (missing on EFS)"
     fi
   done </etc/lab/efs-tool-sources.extra.lst
 fi
+if [ "$LAB_EFS_HAS_EXTRA" = "1" ]; then
+  lab_te_log "using backend efs-tool-sources.extra.lst only (skip generic pdsource auto-pick)"
+else
 for code in $TOOLS_FROM_ENV; do
   [ -z "$code" ] && continue
   path=$(lab_te_resolve_source "$code")
@@ -822,6 +854,7 @@ for code in $TOOLS_FROM_ENV; do
     lab_te_log "WARN domain $code -> $path not found yet (listed for profile.d retry)"
   fi
 done
+fi
 if [ ! -s /etc/lab/efs-tool-sources.lst ]; then
   lab_te_log "no tool source paths (TOOLS_LIST empty?)"
   exit 0
@@ -876,32 +909,39 @@ foreach f (`grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[
     source "$f"
   endif
 end
-# Vendor env may set ICC2_* under /efs/tools/<code> — map to /<code> when needed.
-if ( $$?ICC2_HOME ) then
-  if ( ! -d "$$ICC2_HOME" ) then
-    set _iccfix = `echo "$$ICC2_HOME" | sed -e 's|^/efs/tools/PD|/PD|' -e 's|^/efs/tools/AL|/AL|' -e 's|^/efs/tools/DV|/DV|'`
-    if ( ! -d "$$_iccfix" ) then
-      set _iccfix = `echo "$$ICC2_HOME" | sed -e 's|^/efs/tools/PD/snps|/PD/snps|' -e 's|^/efs/tools/PD/cdn|/PD/cdn|'`
-    endif
-    if ( -d "$$_iccfix" ) setenv ICC2_HOME "$$_iccfix"
-  endif
-  if ( -d "$$ICC2_HOME/linux64/bin" ) then
-    set path = ( "$$ICC2_HOME/linux64/bin" $$path )
-  else if ( -d "$$ICC2_HOME/bin" ) then
-    set path = ( "$$ICC2_HOME/bin" $$path )
+# pdsource sets ICC2_HOME under /efs/tools/PD/... — prefer /PD/... bind mount (do not use $?ICC2_HOME: tcsh treats $? as exit status).
+if ( "$ICC2_HOME" != "" ) then
+  set _iccfix = `echo "$ICC2_HOME" | sed \
+    -e 's|^/efs/tools/PD|/PD|' \
+    -e 's|^/efs/tools/AL|/AL|' \
+    -e 's|^/efs/tools/DV|/DV|'`
+  if ( -d "$_iccfix" ) setenv ICC2_HOME "$_iccfix"
+  if ( -d "$ICC2_HOME/linux64/bin" ) then
+    set path = ( "$ICC2_HOME/linux64/bin" $path )
+  else if ( -d "$ICC2_HOME/bin" ) then
+    set path = ( "$ICC2_HOME/bin" $path )
   endif
 endif
 endif
 ZZLABEFSCSH
 chmod 644 /etc/profile.d/zz-lab-efs-tools.csh 2>/dev/null || true
-if [ ! -f /etc/skel/.tcshrc ] || ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/skel/.tcshrc 2>/dev/null; then
+for skel_rc in .tcshrc .cshrc; do
+  if [ ! -f /etc/skel/$skel_rc ] || ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/skel/$skel_rc 2>/dev/null; then
+    {
+      echo '# semiconlabs-lab-efs-tool-env'
+      echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
+    } >>/etc/skel/$skel_rc
+  fi
+  chmod 644 /etc/skel/$skel_rc 2>/dev/null || true
+done
+if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/csh.cshrc 2>/dev/null; then
   {
+    echo ''
     echo '# semiconlabs-lab-efs-tool-env'
     echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
-  } >>/etc/skel/.tcshrc
+  } >>/etc/csh.cshrc
 fi
-chmod 644 /etc/skel/.tcshrc 2>/dev/null || true
-lab_te_log "installed profile.d zz-lab-efs-tools.csh + bash->tcsh handoff (.sh); skel .tcshrc ($(wc -l </etc/lab/efs-tool-sources.lst) source path(s))"
+lab_te_log "installed profile.d zz-lab-efs-tools.csh + bash->tcsh handoff (.sh); skel + csh.cshrc ($(wc -l </etc/lab/efs-tool-sources.lst) source path(s))"
 exit 0
 LABEFSTOOLENV
 chmod +x /usr/local/sbin/lab-efs-tool-env.sh

@@ -91,6 +91,12 @@ variable "lab_environment" {
   }
 }
 
+variable "env_tag" {
+  description = "EC2 ENV tag value (backend sets LABS-PROD or LABS-STAGING; patched into instance tags at apply time)."
+  type        = string
+  default     = "LABS-STAGING"
+}
+
 variable "aws_region" {
   description = "Region for aws CLI in user-data (tags, SSM). Matches Semiconlabs-backend .env AWS_REGION."
   type        = string
