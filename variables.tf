@@ -312,7 +312,7 @@ variable "lab_efs_mount_target_ip" {
 variable "lab_efs_tool_profile_b64" {
   type        = string
   default     = ""
-  description = "Base64(JSON): { session_user, source_files[], ad_groups_any[] }. Backend sets when lab tool warrants EFS tool env (e.g. PD)."
+  description = "Base64(JSON): { session_user, source_files[], ad_groups_any[] }. Applied after LabBootstrap=READY (background); does not wait for session_user during user-data (backend creates AD account on StartLab)."
 }
 
 variable "lab_efs_open_tool_execute" {

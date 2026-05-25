@@ -51,12 +51,16 @@ lab_install_efs_tool_profile_from_tf() {
   : >"$${gf}"
   printf '%s' "$${cfg}" | jq -r '.ad_groups_any[]?' 2>/dev/null | tr -d '\r' | sed '/^$/d' | head -n 128 >"$${gf}" || true
   local gate_ok=1
+  local defer_per_user=0
+  # Learner AD accounts are created by the backend (LDAP) after StartLab SSH — not during cloud-init.
+  # Never block LabBootstrap=READY on id/getent for session_user (was 40×15s ≈ 10 min).
   if [ -s "$${gf}" ]; then
     gate_ok=0
-    local max_try=40
+    local max_try=6
+    local poll_sec=5
     local n=0
+    lab_log "efs_tool_profile: quick NSS probe for $${su} (max $${max_try}×$${poll_sec}s; account may appear only after backend AD provision)"
     while [ "$${n}" -lt "$${max_try}" ]; do
-      # Use single `$(` — `$$` before `(` can survive in rendered user_data and bash errors (PID + '(').
       n=$(awk -v k="$${n}" 'BEGIN{print k+1}')
       resolved=""
       for cand in "$${su}" "$${short}" "$${short}@$${ad_dom}"; do
@@ -84,18 +88,19 @@ lab_install_efs_tool_profile_from_tf() {
       if [ "$${gate_ok}" = "1" ]; then
         break
       fi
-      _nmod=$(awk -v k="$${n}" 'BEGIN{print k%8}')
-      if [ "$${n}" -eq 1 ] || [ "$${_nmod}" -eq 0 ]; then
-        lab_log "efs_tool_profile: waiting for NSS/SSSD + group membership (user=$${su}, try $${n}/$${max_try}, resolved=$${resolved:-empty})"
+      if [ "$${n}" -eq 1 ] || [ "$${n}" -eq "$${max_try}" ]; then
+        lab_log "efs_tool_profile: NSS probe try $${n}/$${max_try} user=$${su} resolved=$${resolved:-empty}"
       fi
-      sleep 15
+      [ "$${n}" -lt "$${max_try}" ] && sleep "$${poll_sec}"
     done
+    if [ "$${gate_ok}" != "1" ]; then
+      lab_log "WARN efs_tool_profile: $${su} not in AD during bootstrap — installing global tool env only; per-user hooks deferred (backend creates AD user on StartLab)"
+      gate_ok=1
+      defer_per_user=1
+      resolved=""
+    fi
   fi
   rm -f "$${gf}" 2>/dev/null || true
-  if [ "$${gate_ok}" != "1" ]; then
-    lab_log "WARN efs_tool_profile: AD group gate failed or user '$${su}' not resolvable — not installing EFS tool profile.d"
-    return 0
-  fi
   install -d /etc/lab
   printf '%s' "$${cfg}" | jq -r '.source_files[]?' 2>/dev/null | tr -d '\r' | sed '/^$/d' | head -n 64 >/etc/lab/efs-tool-sources.extra.lst || true
   if [ ! -s /etc/lab/efs-tool-sources.extra.lst ]; then
@@ -112,6 +117,8 @@ lab_install_efs_tool_profile_from_tf() {
         [ -n "$${_uhome}" ] || continue
         lab_patch_user_shell_hooks "$${_uname}" "$${_uid}" "$${_gid}" "$${_uhome}"
       done < <(getent passwd 2>/dev/null || true)
+      rm -f /etc/lab/efs-tool-profile.payload.b64 2>/dev/null || true
+      lab_log "efs_tool_profile: per-user shell hooks applied for $${resolved}"
     fi
   fi
   if [ -s /etc/lab/efs-tool-sources.lst ]; then
@@ -138,6 +145,43 @@ lab_install_efs_tool_profile_from_tf() {
     chmod 644 /etc/lab/efs-tool-profile-status.json 2>/dev/null || true
   fi
   lab_log "efs_tool_profile: installed vendor env via lab-efs-tool-env.sh ($(wc -l </etc/lab/efs-tool-sources.lst 2>/dev/null || echo 0) path(s))"
+  if [ "$${defer_per_user}" = "1" ] && [ -n "$${b64}" ]; then
+    install -d /etc/lab
+    printf '%s' "$${b64}" > /etc/lab/efs-tool-profile.payload.b64
+    chmod 600 /etc/lab/efs-tool-profile.payload.b64 2>/dev/null || true
+    lab_log "efs_tool_profile: saved payload for deferred per-user install (/usr/local/sbin/lab-efs-tool-profile-deferred.sh)"
+  fi
+}
+
+# After LabBootstrap=READY: retry per-user EFS hooks when backend has created the AD account.
+lab_install_efs_tool_profile_deferred_loop() {
+  local b64f=/etc/lab/efs-tool-profile.payload.b64
+  [ -s "$${b64f}" ] || return 0
+  local max_rounds=40
+  local round=0
+  while [ "$${round}" -lt "$${max_rounds}" ]; do
+    round=$((round + 1))
+    lab_install_efs_tool_profile_from_tf || true
+    if [ ! -s "$${b64f}" ]; then
+      lab_log "efs_tool_profile: deferred per-user install complete (round $${round})"
+      return 0
+    fi
+    if [ "$${round}" -eq 1 ] || [ $((round % 6)) -eq 0 ]; then
+      lab_log "efs_tool_profile: deferred retry round $${round}/$${max_rounds} (waiting for backend AD user + SSSD)"
+    fi
+    sleep 30
+  done
+  lab_log "WARN efs_tool_profile: deferred per-user install stopped after $${max_rounds} rounds (global zz-lab-efs-tools may still work)"
+  return 0
+}
+
+lab_install_efs_tool_profile_background() {
+  if [ -z '${lab_efs_tool_profile_b64}' ]; then
+    return 0
+  fi
+  lab_log "efs_tool_profile: background worker starting (must not block LabBootstrap=READY)"
+  nohup bash -c 'lab_install_efs_tool_profile_deferred_loop' >>"$LOG" 2>&1 &
+  lab_log "efs_tool_profile: background pid=$!"
 }
 
 # Ensure every tcsh/csh session (DCV often uses short AD name, not UPN) loads vendor env.
@@ -1460,7 +1504,6 @@ PAMDCV
 fi
 
 lab_log "AD phase finished"
-lab_install_efs_tool_profile_from_tf || true
 %{ endif ~}
 
 lab_log "DCV: /etc dcvserver.service (strip [Service] ExecStartPre) + late drop-in + dcv.conf boot auto-session=false web_all=${dcv_web_listen_all} (tf dcv_use_console_sessions=${dcv_use_console_sessions})"
@@ -1603,6 +1646,9 @@ lab_aws ec2 create-tags \
 if [ "$${LAB_BOOTSTRAP_TAG}" = "READY" ]; then
   lab_log "BOOTSTRAP COMPLETE — verify AD: getent passwd <user>; sssctl domain-status; DCV: ss -tlnp | grep 8443; log=$LOG"
   echo "========== BOOTSTRAP COMPLETE =========="
+%{ if enable_ad_join ~}
+  lab_install_efs_tool_profile_background || true
+%{ endif ~}
 else
   lab_log "BOOTSTRAP FAILED — AD join required for learner DCV; log=$LOG"
   echo "========== BOOTSTRAP FAILED (AD) =========="
