@@ -16,39 +16,58 @@ locals {
   lab_instance_display_name = var.lab_environment == "production" ? "SemiconLab-Prod-Instance-${var.suffix}" : "SemiconLab-Staging-Instance-${var.suffix}"
 
   lab_user_data_template_vars = {
-    aws_region                            = var.aws_region
-    suffix                                = var.suffix
-    enable_ad_join                        = var.enable_ad_join
-    ad_join_mechanism                     = var.ad_join_mechanism
-    ad_domain                             = var.ad_domain
-    ad_krb5_realm                         = local.ad_krb5_realm
-    lower_ad_domain                       = local.lower_ad_domain
-    ad_extra_upn_suffixes                 = var.ad_extra_upn_suffixes
-    ad_join_user                          = var.ad_join_user
-    ad_join_password_b64                  = trimspace(var.ad_join_password) != "" ? base64encode(var.ad_join_password) : ""
-    ad_join_password_ssm_parameter_name   = var.ad_join_password_ssm_parameter_name
+    aws_region                                = var.aws_region
+    suffix                                    = var.suffix
+    enable_ad_join                            = var.enable_ad_join
+    ad_join_mechanism                         = var.ad_join_mechanism
+    ad_domain                                 = var.ad_domain
+    ad_krb5_realm                             = local.ad_krb5_realm
+    lower_ad_domain                           = local.lower_ad_domain
+    ad_extra_upn_suffixes                     = var.ad_extra_upn_suffixes
+    ad_join_user                              = var.ad_join_user
+    ad_join_password_b64                      = trimspace(var.ad_join_password) != "" ? base64encode(var.ad_join_password) : ""
+    ad_join_password_ssm_parameter_name       = var.ad_join_password_ssm_parameter_name
     ad_join_password_secretsmanager_secret_id = var.ad_join_password_secretsmanager_secret_id
-    ad_computer_ou                        = var.ad_computer_ou
-    ad_dns_ips                            = var.ad_dns_ips
-    dcv_use_console_sessions              = var.dcv_use_console_sessions
-    dcv_web_listen_all                    = var.dcv_web_listen_all
-    ad_ssm_join_wait_max_sec              = var.ad_ssm_join_wait_max_sec
-    ad_ssm_association_delay              = var.ad_ssm_association_delay
-    ad_sssd_default_shell                 = var.ad_sssd_default_shell
-    ad_fallback_adcli_after_ssm           = var.ad_fallback_adcli_after_ssm
-    lab_efs_nfs_host                      = var.lab_efs_nfs_host
-    lab_efs_tools_mount_codes             = var.lab_efs_tools_mount_codes
-    lab_efs_aws_ip_fallback               = var.lab_efs_aws_ip_fallback
-    lab_efs_mount_target_ip               = var.lab_efs_mount_target_ip
-    lab_efs_tool_profile_b64              = var.lab_efs_tool_profile_b64
-    lab_efs_open_tool_execute             = var.lab_efs_open_tool_execute
-    # Keep empty: embedding the full OpenSSH line in user-data pushes gzip over EC2's 16 KiB cap.
-    # Backend injects the same key via SSM after boot (see terraform.service lab-ssh-key-inject).
-    lab_ssh_public_key_b64 = ""
+    ad_computer_ou                            = var.ad_computer_ou
+    ad_dns_ips                                = var.ad_dns_ips
+    dcv_use_console_sessions                  = var.dcv_use_console_sessions
+    dcv_web_listen_all                        = var.dcv_web_listen_all
+    ad_ssm_join_wait_max_sec                  = var.ad_ssm_join_wait_max_sec
+    ad_ssm_association_delay                  = var.ad_ssm_association_delay
+    ad_sssd_default_shell                     = var.ad_sssd_default_shell
+    ad_fallback_adcli_after_ssm               = var.ad_fallback_adcli_after_ssm
+    lab_efs_nfs_host                          = var.lab_efs_nfs_host
+    lab_efs_tools_mount_codes                 = var.lab_efs_tools_mount_codes
+    lab_efs_aws_ip_fallback                   = var.lab_efs_aws_ip_fallback
+    lab_efs_mount_target_ip                   = var.lab_efs_mount_target_ip
+    lab_efs_tool_profile_b64                  = var.lab_efs_tool_profile_b64
+    lab_efs_open_tool_execute                 = var.lab_efs_open_tool_execute
+    # SSH public key is injected via SSM after boot — never embed in user-data (size).
+    lab_ssh_public_key_b64                    = ""
   }
-  lab_user_data_rendered = templatefile("${path.module}/user-data.sh.tftpl", local.lab_user_data_template_vars)
+
+  # TEMP (prod): monolithic user-data — keep under 16 KiB gzip. Do not embed large per-lab blobs here.
+  lab_user_data_rendered = templatefile("${path.module}/user-data.sh.tftpl", merge(local.lab_user_data_template_vars, {
+    lab_efs_tool_profile_b64 = ""
+  }))
   lab_user_data_gzip_b64 = base64gzip(local.lab_user_data_rendered)
+
+  # TODO (post-prod): S3 bootstrap split — see bootstrap-full.sh.tftpl + user-data-stub.sh.tftpl
+  # lab_bootstrap_s3_key     = "lab-bootstrap/bootstrap-full-${var.suffix}.sh"
+  # lab_bootstrap_s3_uri     = "s3://${var.bootstrap_s3_bucket}/${local.lab_bootstrap_s3_key}"
+  # lab_bootstrap_full_rendered = templatefile("${path.module}/bootstrap-full.sh.tftpl", local.lab_user_data_template_vars)
+  # lab_user_data_rendered = templatefile("${path.module}/user-data-stub.sh.tftpl", { aws_region = var.aws_region, suffix = var.suffix, bootstrap_s3_uri = local.lab_bootstrap_s3_uri })
+  # lab_user_data_gzip_b64 = base64gzip(local.lab_user_data_rendered)
 }
+
+# resource "aws_s3_object" "lab_bootstrap_full" {
+#   bucket       = var.bootstrap_s3_bucket
+#   key          = local.lab_bootstrap_s3_key
+#   content      = local.lab_bootstrap_full_rendered
+#   content_type = "text/x-shellscript"
+#   etag         = md5(local.lab_bootstrap_full_rendered)
+#   server_side_encryption = "AES256"
+# }
 
 # Generate an SSH key pair
 resource "tls_private_key" "master_key_gen" {
@@ -66,12 +85,12 @@ output "private_key_pem" {
 
 # Lab instance (Amazon Linux / DCV); bootstrap enables SSH, EFS, DCV, SSSD
 resource "aws_instance" "CentOS8-AMD" {
-  ami                    = var.ami_id
-  instance_type          = var.instance_type
-  subnet_id              = var.subnet_id
+  ami                         = var.ami_id
+  instance_type               = var.instance_type
+  subnet_id                   = var.subnet_id
   associate_public_ip_address = var.associate_public_ip_address
-  vpc_security_group_ids = [var.lab_security_group_id]
-  iam_instance_profile   = var.iam_instance_profile_name
+  vpc_security_group_ids      = [var.lab_security_group_id]
+  iam_instance_profile        = var.iam_instance_profile_name
 
   root_block_device {
     volume_size           = var.root_volume_size
@@ -79,14 +98,11 @@ resource "aws_instance" "CentOS8-AMD" {
     delete_on_termination = var.delete_root_volume_on_termination
   }
 
-
-  # EC2 user_data is capped at 16 KiB (gzip payload); full bootstrap is ~50+ KiB uncompressed.
+  # EC2 user_data gzip payload must be <= 16384 bytes (see user-data-size.tf).
   user_data_base64 = local.lab_user_data_gzip_b64
   tags = {
     Name         = local.lab_instance_display_name
     map-migrated = "DADS45OSDL"
-    # PENDING until user-data finishes AD/SSSD/DCV and runs ec2 create-tags LabBootstrap=READY.
-    # Do not set READY here — backend would start DCV before cloud-init completes.
     LabBootstrap = "PENDING"
   }
 }
@@ -150,3 +166,5 @@ output "instance_id" {
   value = aws_instance.CentOS8-AMD.id
 }
 
+# output "lab_bootstrap_s3_uri" { value = local.lab_bootstrap_s3_uri }
+# output "lab_bootstrap_full_bytes" { value = nonsensitive(length(local.lab_bootstrap_full_rendered)) }

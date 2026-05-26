@@ -1,6 +1,6 @@
 #!/bin/bash
-# LEGACY — do not grow this file for new labs. Use bootstrap-full.sh.tftpl (uploaded to S3)
-# + user-data-stub.sh.tftpl (EC2 user-data). See main.tf lab_bootstrap_* locals.
+# Full lab bootstrap (rendered at terraform apply → S3 → executed by user-data-stub).
+# No EC2 16 KiB limit — add new bootstrap logic here, not in user-data-stub.sh.tftpl.
 # `-e` removed: this script intentionally tolerates individual command failures
 # (each critical step has its own `|| true` / explicit error log). With `-e`,
 # any non-handled failure would abort bootstrap silently — including the AD-join
@@ -14,11 +14,176 @@ lab_log() {
   echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-bootstrap] $*"
 }
 
-# TEMP: omitted from user-data (16 KiB EC2 cap + per-lab b64 blob). EFS tool env still runs via
-# lab-efs-tool-env.sh after mount; backend can apply session profile after AD user exists (SSM/SSH).
+# After AD join + SSSD: optional EFS vendor env (PD etc.) for the lab session owner.
+# Payload (base64 JSON) is built by the backend from tool assignment + session user UPN.
+# If ad_groups_any is non-empty, we require id -Gn <user> to match at least one (OR) before
+# installing profile.d; otherwise we trust backend entitlement only.
 lab_install_efs_tool_profile_from_tf() {
-  lab_log "efs_tool_profile: skipped in user-data (size); use global /etc/profile.d from lab-efs-tool-env.sh"
+  local b64='${lab_efs_tool_profile_b64}'
+  local ad_dom='${lower_ad_domain}'
+  if [ -z "$${b64}" ]; then
+    lab_log "efs_tool_profile: skip (empty lab_efs_tool_profile_b64)"
+    return 0
+  fi
+  if ! command -v base64 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    lab_log "WARN efs_tool_profile: need base64 and jq"
+    return 0
+  fi
+  local cfg
+  cfg=$(printf '%s' "$${b64}" | base64 -d 2>/dev/null) || true
+  if [ -z "$${cfg}" ]; then
+    lab_log "WARN efs_tool_profile: base64 decode failed or empty"
+    return 0
+  fi
+  if ! printf '%s' "$${cfg}" | jq -e . >/dev/null 2>&1; then
+    lab_log "WARN efs_tool_profile: JSON invalid after decode"
+    return 0
+  fi
+  local su
+  su=$(printf '%s' "$${cfg}" | jq -r '.session_user // empty' 2>/dev/null | tr -d '\r\n' | head -c 512)
+  if [ -z "$${su}" ]; then
+    lab_log "WARN efs_tool_profile: missing session_user in payload"
+    return 0
+  fi
+  local short="$${su%%@*}"
+  local resolved=""
+  local gf
+  gf=$(mktemp /tmp/lab-efs-groups.XXXXXX 2>/dev/null || true)
+  [ -n "$${gf}" ] || gf=/tmp/lab-efs-groups.$$
+  : >"$${gf}"
+  printf '%s' "$${cfg}" | jq -r '.ad_groups_any[]?' 2>/dev/null | tr -d '\r' | sed '/^$/d' | head -n 128 >"$${gf}" || true
+  local gate_ok=1
+  local defer_per_user=0
+  # Learner AD accounts are created by the backend (LDAP) after StartLab SSH — not during cloud-init.
+  # Never block LabBootstrap=READY on id/getent for session_user (was 40×15s ≈ 10 min).
+  if [ -s "$${gf}" ]; then
+    gate_ok=0
+    local max_try=6
+    local poll_sec=5
+    local n=0
+    lab_log "efs_tool_profile: quick NSS probe for $${su} (max $${max_try}×$${poll_sec}s; account may appear only after backend AD provision)"
+    while [ "$${n}" -lt "$${max_try}" ]; do
+      n=$(awk -v k="$${n}" 'BEGIN{print k+1}')
+      resolved=""
+      for cand in "$${su}" "$${short}" "$${short}@$${ad_dom}"; do
+        [ -z "$${cand}" ] && continue
+        if id "$${cand}" >/dev/null 2>&1; then
+          resolved="$${cand}"
+          break
+        fi
+      done
+      if [ -n "$${resolved}" ]; then
+        local gline
+        gline=$(id -Gn "$${resolved}" 2>/dev/null || true)
+        if [ -n "$${gline}" ]; then
+          while IFS= read -r greq || [ -n "$${greq}" ]; do
+            greq=$(echo "$${greq}" | tr -d '\r\n' | xargs)
+            [ -z "$${greq}" ] && continue
+            if printf ' %s ' "$${gline}" | grep -Fq " $${greq} "; then
+              gate_ok=1
+              lab_log "efs_tool_profile: AD group gate OK (user=$${resolved} matched group=$${greq})"
+              break
+            fi
+          done < "$${gf}"
+        fi
+      fi
+      if [ "$${gate_ok}" = "1" ]; then
+        break
+      fi
+      if [ "$${n}" -eq 1 ] || [ "$${n}" -eq "$${max_try}" ]; then
+        lab_log "efs_tool_profile: NSS probe try $${n}/$${max_try} user=$${su} resolved=$${resolved:-empty}"
+      fi
+      [ "$${n}" -lt "$${max_try}" ] && sleep "$${poll_sec}"
+    done
+    if [ "$${gate_ok}" != "1" ]; then
+      lab_log "WARN efs_tool_profile: $${su} not in AD during bootstrap — installing global tool env only; per-user hooks deferred (backend creates AD user on StartLab)"
+      gate_ok=1
+      defer_per_user=1
+      resolved=""
+    fi
+  fi
+  rm -f "$${gf}" 2>/dev/null || true
+  install -d /etc/lab
+  printf '%s' "$${cfg}" | jq -r '.source_files[]?' 2>/dev/null | tr -d '\r' | sed '/^$/d' | head -n 64 >/etc/lab/efs-tool-sources.extra.lst || true
+  if [ ! -s /etc/lab/efs-tool-sources.extra.lst ]; then
+    lab_log "WARN efs_tool_profile: no source_files in payload"
+    return 0
+  fi
+  /usr/local/sbin/lab-efs-tool-env.sh 2>/dev/null || true
+  lab_install_global_tcsh_tool_hook
+  if [ -n "$${resolved}" ] && [ -s /etc/lab/efs-tool-sources.lst ]; then
+    uid=$(getent passwd "$${resolved}" 2>/dev/null | awk -F: 'NR==1{print $3; exit}')
+    if [ -n "$${uid}" ]; then
+      while IFS=: read -r _uname _uid _gid _uhome; do
+        [ "$${_uid}" = "$${uid}" ] || continue
+        [ -n "$${_uhome}" ] || continue
+        lab_patch_user_shell_hooks "$${_uname}" "$${_uid}" "$${_gid}" "$${_uhome}"
+      done < <(getent passwd 2>/dev/null || true)
+      rm -f /etc/lab/efs-tool-profile.payload.b64 2>/dev/null || true
+      lab_log "efs_tool_profile: per-user shell hooks applied for $${resolved}"
+    fi
+  fi
+  if [ -s /etc/lab/efs-tool-sources.lst ]; then
+    {
+      echo '{'
+      echo '  "efs_profile_installed": true,'
+      echo '  "note": "pdsource/alsource/dvsource are tcsh-only; loaded via profile.d zz-lab-efs-tools.csh and login tcsh.",'
+      echo "  \"checked_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+      echo '  "profile_d_sh": "/etc/profile.d/zz-lab-efs-tools.sh",'
+      echo '  "profile_d_csh": "/etc/profile.d/zz-lab-efs-tools.csh",'
+      echo '  "sources": ['
+      first=1
+      while IFS= read -r f || [ -n "$${f}" ]; do
+        case "$${f}" in ''|'#'*) continue;; esac
+        esc=$(printf '%s' "$${f}" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')
+        if [ "$${first}" = 1 ]; then first=0; else echo ','; fi
+        if [ -f "$${f}" ]; then ex=true; else ex=false; fi
+        printf '    {"path":"%s","exists_at_install":%s}' "$${esc}" "$${ex}"
+      done </etc/lab/efs-tool-sources.lst
+      echo ''
+      echo '  ]'
+      echo '}'
+    } >/etc/lab/efs-tool-profile-status.json 2>/dev/null || true
+    chmod 644 /etc/lab/efs-tool-profile-status.json 2>/dev/null || true
+  fi
+  lab_log "efs_tool_profile: installed vendor env via lab-efs-tool-env.sh ($(wc -l </etc/lab/efs-tool-sources.lst 2>/dev/null || echo 0) path(s))"
+  if [ "$${defer_per_user}" = "1" ] && [ -n "$${b64}" ]; then
+    install -d /etc/lab
+    printf '%s' "$${b64}" > /etc/lab/efs-tool-profile.payload.b64
+    chmod 600 /etc/lab/efs-tool-profile.payload.b64 2>/dev/null || true
+    lab_log "efs_tool_profile: saved payload for deferred per-user install (/usr/local/sbin/lab-efs-tool-profile-deferred.sh)"
+  fi
+}
+
+# After LabBootstrap=READY: retry per-user EFS hooks when backend has created the AD account.
+lab_install_efs_tool_profile_deferred_loop() {
+  local b64f=/etc/lab/efs-tool-profile.payload.b64
+  [ -s "$${b64f}" ] || return 0
+  local max_rounds=40
+  local round=0
+  while [ "$${round}" -lt "$${max_rounds}" ]; do
+    round=$((round + 1))
+    lab_install_efs_tool_profile_from_tf || true
+    if [ ! -s "$${b64f}" ]; then
+      lab_log "efs_tool_profile: deferred per-user install complete (round $${round})"
+      return 0
+    fi
+    if [ "$${round}" -eq 1 ] || [ $((round % 6)) -eq 0 ]; then
+      lab_log "efs_tool_profile: deferred retry round $${round}/$${max_rounds} (waiting for backend AD user + SSSD)"
+    fi
+    sleep 30
+  done
+  lab_log "WARN efs_tool_profile: deferred per-user install stopped after $${max_rounds} rounds (global zz-lab-efs-tools may still work)"
   return 0
+}
+
+lab_install_efs_tool_profile_background() {
+  if [ -z '${lab_efs_tool_profile_b64}' ]; then
+    return 0
+  fi
+  lab_log "efs_tool_profile: background worker starting (must not block LabBootstrap=READY)"
+  nohup bash -c 'lab_install_efs_tool_profile_deferred_loop' >>"$LOG" 2>&1 &
+  lab_log "efs_tool_profile: background pid=$!"
 }
 
 # Ensure every tcsh/csh session (DCV often uses short AD name, not UPN) loads vendor env.
@@ -525,14 +690,51 @@ lab_efs_complete_vendor_layout() {
   lab_efs_ensure_legacy_efs_paths
   lab_efs_log "layout: PD|DV|AL=/$TOOLS_LIST /tools=nfs /efs/tools/<code>=symlink or share"
 }
-# TEMP: recursive chmod on shared EFS omitted from user-data (size + boot time). Top-level a+rx only.
+# Shared EFS: binaries may be 755 but parent dirs 750 block AD UIDs (staging/prod AD both OK on one EFS).
+# Recursive chmod on multi-TB NFS trees can run for hours and block cloud-init — never do that synchronously
+# during bootstrap (LabBootstrap=READY / AD join must proceed).
+lab_efs_chmod_tree() {
+  local p="$1" rc=0
+  [ -d "$p" ] || return 0
+  lab_efs_log "EFS chmod -R a+rX start: $p"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 600 chmod -R a+rX "$p" 2>/dev/null || rc=$?
+  else
+    chmod -R a+rX "$p" 2>/dev/null || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    lab_efs_log "EFS chmod a+rX OK: $p"
+    return 0
+  fi
+  if [ "$rc" -eq 124 ] 2>/dev/null || [ "$rc" -eq 143 ] 2>/dev/null; then
+    lab_efs_log "WARN EFS chmod timed out (600s) on $p — tree may still be traversing in background; top-level a+rx already applied"
+  else
+    lab_efs_log "WARN EFS chmod failed rc=$rc on $p"
+  fi
+  return 1
+}
 lab_efs_open_binaries_for_nfs_users() {
   local p n=0
+  lab_efs_log "EFS learner traverse+execute: start (top-level a+rx, then recursive vendor trees)"
   for p in /PD /AL /DV /tools; do
     [ -d "$p" ] || continue
     chmod a+rx "$p" 2>/dev/null && n=$((n + 1))
   done
-  lab_efs_log "EFS learner traverse: top-level a+rx only ($n paths; full chmod deferred to S3-split / cron)"
+  for p in /PD/snps /PD/cdn /AL/cdn /DV/snps /DV/cdn /tools/synopsys /tools/cad2k /tools/cad; do
+    lab_efs_chmod_tree "$p" && n=$((n + 1)) || true
+  done
+  if mountpoint -q /efs 2>/dev/null && [ -d /efs/tools ]; then
+    chmod a+rx /efs /efs/tools 2>/dev/null || true
+    for p in /efs/tools/PD /efs/tools/PD/snps /efs/tools/PD/cdn /efs/tools/AL /efs/tools/DV; do
+      lab_efs_chmod_tree "$p" && n=$((n + 1)) || true
+    done
+  fi
+  lab_efs_log "EFS learner traverse+execute: finished pass (updated $n trees; one EFS / many AD domains — numeric UID only)"
+}
+lab_efs_open_binaries_for_nfs_users_background() {
+  lab_efs_log "EFS learner chmod: deferring recursive a+rX to background (do not block LabBootstrap / AD join on NFS)"
+  nohup /usr/local/sbin/lab-efs-mount.sh --chmod-only >>"$LOG" 2>&1 &
+  lab_efs_log "EFS learner chmod: background pid=$! (log=$LOG)"
 }
 lab_efs_verify_required_mounts() {
   local c fail=0
@@ -631,6 +833,17 @@ lab_efs_bind_tools() {
   lab_efs_bind_tools_via_root
   lab_efs_hide_efs_root
 }
+# Background-only entry (bootstrap spawns this after SUMMARY OK).
+if [ "$${1:-}" = "--chmod-only" ]; then
+  lab_efs_log "mode=--chmod-only (background learner execute bits)"
+%{ if lab_efs_open_tool_execute ~}
+  lab_efs_open_binaries_for_nfs_users || true
+%{ else ~}
+  lab_efs_log "mode=--chmod-only skipped (lab_efs_open_tool_execute=false)"
+%{ endif ~}
+  exit 0
+fi
+
 lab_efs_log "start EFS_DNS=$EFS_DNS static_ip=$${EFS_STATIC_IP:-none} tools=[$TOOLS_LIST] (no fstab; remount every boot via lab-efs-mount.service)"
 _pass=1
 _max_pass=6
@@ -647,7 +860,7 @@ while [ "$_pass" -le "$_max_pass" ]; do
     fi
     lab_efs_log "SUMMARY OK (pass $_pass)"
 %{ if lab_efs_open_tool_execute ~}
-    lab_efs_open_binaries_for_nfs_users || true
+    lab_efs_open_binaries_for_nfs_users_background || true
 %{ endif ~}
     exit 0
   fi
@@ -1436,7 +1649,7 @@ if [ "$${LAB_BOOTSTRAP_TAG}" = "READY" ]; then
   lab_log "BOOTSTRAP COMPLETE — verify AD: getent passwd <user>; sssctl domain-status; DCV: ss -tlnp | grep 8443; log=$LOG"
   echo "========== BOOTSTRAP COMPLETE =========="
 %{ if enable_ad_join ~}
-  lab_install_efs_tool_profile_from_tf || true
+  lab_install_efs_tool_profile_background || true
 %{ endif ~}
 else
   lab_log "BOOTSTRAP FAILED — AD join required for learner DCV; log=$LOG"

@@ -103,6 +103,13 @@ variable "aws_region" {
   default     = "ap-south-1"
 }
 
+# Unused until S3 split is enabled in main.tf (kept so backend tfvars do not fail).
+variable "bootstrap_s3_bucket" {
+  description = "Reserved for S3 bootstrap split (TODO). Not used while main.tf uses monolithic user-data.sh.tftpl."
+  type        = string
+  default     = ""
+}
+
 # AWS Managed Microsoft AD directory id (same as AD_DIRECTORY_ID in Semiconlabs-backend .env).
 variable "ad_directory_id" {
   description = "Directory Service id (d-xxxxxxxxxx). Required when enable_ad_join=true and ad_join_mechanism=ssm_aws_managed."

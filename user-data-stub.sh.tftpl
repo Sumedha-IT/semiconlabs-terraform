@@ -1,0 +1,71 @@
+#!/bin/bash
+# EC2 user-data stub (~1–2 KiB gzip). Full bootstrap is rendered at terraform apply,
+# uploaded to S3, and executed here — never embedded in user_data (16 KiB gzip cap).
+set -uo pipefail
+
+LOG=/var/log/lab-bootstrap.log
+exec > >(tee -a "$LOG") 2>&1
+
+lab_stub_log() {
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-bootstrap-stub] $*"
+}
+
+echo "========== LAB BOOTSTRAP STUB START =========="
+lab_stub_log "stub_version=3 suffix=${suffix} s3=${bootstrap_s3_uri}"
+
+REGION="${aws_region}"
+export AWS_DEFAULT_REGION="$REGION"
+export AWS_REGION="$REGION"
+
+if ! grep -q '^AWS_DEFAULT_REGION=' /etc/environment 2>/dev/null; then
+  echo "AWS_DEFAULT_REGION=$REGION" >>/etc/environment
+fi
+if ! grep -q '^AWS_REGION=' /etc/environment 2>/dev/null; then
+  echo "AWS_REGION=$REGION" >>/etc/environment
+fi
+
+install -d /etc/systemd/system/amazon-ssm-agent.service.d
+cat >/etc/systemd/system/amazon-ssm-agent.service.d/99-lab-aws-region.conf <<SSMENV
+[Service]
+Environment=AWS_DEFAULT_REGION=$REGION
+Environment=AWS_REGION=$REGION
+Environment=PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/sbin:/bin
+SSMENV
+systemctl daemon-reload 2>/dev/null || true
+systemctl restart amazon-ssm-agent.service 2>/dev/null || systemctl restart amazon-ssm-agent 2>/dev/null || true
+
+install -d /root/.aws
+cat >/root/.aws/config <<LAB_AWSCFG
+[default]
+region = $REGION
+LAB_AWSCFG
+chmod 600 /root/.aws/config 2>/dev/null || true
+
+BOOTSTRAP_S3_URI="${bootstrap_s3_uri}"
+BOOTSTRAP_LOCAL=/usr/local/sbin/lab-bootstrap-full.sh
+
+if ! command -v aws >/dev/null 2>&1; then
+  lab_stub_log "ERROR: aws CLI not found — cannot download bootstrap from S3"
+  exit 1
+fi
+
+lab_stub_log "downloading $BOOTSTRAP_S3_URI -> $BOOTSTRAP_LOCAL"
+DL_OK=0
+for attempt in 1 2 3 4 5; do
+  if aws s3 cp "$BOOTSTRAP_S3_URI" "$BOOTSTRAP_LOCAL" --region "$REGION" 2>&1; then
+    DL_OK=1
+    break
+  fi
+  lab_stub_log "WARN s3 cp attempt $attempt/5 failed — retry in 10s"
+  sleep 10
+done
+
+if [ "$DL_OK" != "1" ]; then
+  lab_stub_log "ERROR: bootstrap download failed — instance role needs s3:GetObject on $BOOTSTRAP_S3_URI"
+  exit 1
+fi
+
+chmod +x "$BOOTSTRAP_LOCAL"
+lab_stub_log "download OK — executing full bootstrap from S3"
+echo "========== LAB BOOTSTRAP STUB HAND-OFF =========="
+exec bash "$BOOTSTRAP_LOCAL"

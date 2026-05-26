@@ -1,4 +1,8 @@
-# Copy to terraform.tfvars (gitignored) and adjust. Current golden lab AMI (ap-south-1, GNOME+DCV+PAM; AD join via user-data + SSM):
+# Copy to terraform.tfvars (gitignored) and adjust.
+# Bootstrap: full script in S3 (bootstrap-full.sh.tftpl); EC2 user-data is a small stub only (16 KiB gzip cap).
+# bootstrap_s3_bucket — same bucket as backend AWS_S3_LAB_TERRAFORM_BUCKET / LAB_BOOTSTRAP_S3_BUCKET.
+# bootstrap_s3_bucket = "your-lab-terraform-state-bucket"
+# Current golden lab AMI (ap-south-1, GNOME+DCV+PAM; AD join via bootstrap-full + SSM):
 ami_id = "ami-066401294ec783ea4"
 
 # Domain join (realm_userdata): defaults also in variables.tf — override here to avoid committing secrets.
