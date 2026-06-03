@@ -12,8 +12,8 @@ locals {
   # to the NIC resolver (nmcli). Put the primary DC DNS first in ad_dns_ips.
   ad_ssm_join_dns_ip = trimspace(var.ad_dns_ips[0])
 
-  # EC2 Name tag + local PEM base name — staging vs prod (set via terraform.tfvars `lab_environment`).
-  lab_instance_display_name = var.lab_environment == "production" ? "SemiconLab-Prod-Instance-${var.suffix}" : "SemiconLab-Staging-Instance-${var.suffix}"
+  # Production-only repo — fixed prod name prefix (staging uses staging-labs-tf).
+  lab_instance_display_name = "SemiconLab-Prod-Instance-${var.suffix}"
 
   lab_user_data_template_vars = {
     aws_region                                = var.aws_region
@@ -101,9 +101,11 @@ resource "aws_instance" "CentOS8-AMD" {
   # EC2 user_data gzip payload must be <= 16384 bytes (see user-data-size.tf).
   user_data_base64 = local.lab_user_data_gzip_b64
   tags = {
-    Name         = local.lab_instance_display_name
-    map-migrated = "DADS45OSDL"
-    LabBootstrap = "PENDING"
+    Name            = local.lab_instance_display_name
+    Environment     = var.env_tag
+    LabEnvironment  = var.lab_environment
+    map-migrated    = "DADS45OSDL"
+    LabBootstrap    = "PENDING"
   }
 }
 

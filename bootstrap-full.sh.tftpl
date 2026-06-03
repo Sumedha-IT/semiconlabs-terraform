@@ -231,7 +231,7 @@ lab_ensure_awscli_v2() {
   fi
   if [ -x /usr/local/bin/aws ]; then
     lab_log "awscli v2 installed: $(/usr/local/bin/aws --version 2>&1 | head -1)"
-    export PATH="/usr/local/bin:/usr/local/sbin:$$PATH"
+    export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
     return 0
   fi
   lab_log "WARN awscli v2 install failed; will use PATH aws ($(command -v aws 2>/dev/null || echo none))"
@@ -443,15 +443,22 @@ lab_log "lab SSH pubkey: skipped in user-data (backend SSM inject); keeps gzip u
 
 # AD + aws RPMs BEFORE EFS: nfs-utils (mount.nfs4), bind-utils (host/getent), awscli (DescribeMountTargets when VPC DNS fails on EFS hostname).
 # tcsh/csh: required for learner DCV shells (SSSD default_shell often /bin/tcsh on PD/AL/DV labs).
-lab_log "early dnf/yum: realmd adcli sssd krb5-workstation nfs-utils bind-utils tcsh csh awscli curl unzip (before EFS + awscli v2 zip)"
-if command -v dnf >/dev/null 2>&1; then
-  dnf -q -y install realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
-    krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils \
-    tcsh csh curl unzip ca-certificates awscli 2>&1 || true
-elif command -v yum >/dev/null 2>&1; then
-  yum -q -y install realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools \
-    krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils \
-    tcsh csh curl unzip ca-certificates awscli 2>&1 || true
+lab_log "checking pre-installed early packages..."
+MISSING_PKGS=""
+for pkg in realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli; do
+  if ! rpm -q "$pkg" >/dev/null 2>&1; then
+    MISSING_PKGS="$MISSING_PKGS $pkg"
+  fi
+done
+if [ -n "$MISSING_PKGS" ]; then
+  lab_log "installing missing packages:$MISSING_PKGS"
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -q -y install $MISSING_PKGS 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum -q -y install $MISSING_PKGS 2>&1 || true
+  fi
+else
+  lab_log "all early packages are already installed (dnf/yum fetch skipped)"
 fi
 if command -v tcsh >/dev/null 2>&1; then
   lab_log "tcsh present: $(tcsh --version 2>&1 | head -1)"
@@ -986,6 +993,7 @@ ZZLABEFS
 chmod 644 /etc/profile.d/zz-lab-efs-tools.sh 2>/dev/null || true
 cat >/etc/profile.d/zz-lab-efs-tools.csh <<'ZZLABEFSCSH'
 # Lab domain vendor env for tcsh/csh (DCV learner shells; Cadence/Synopsys pdsource etc.).
+set _orig_dir = "$cwd"
 if ( -r /etc/lab/efs-tool-sources.lst ) then
 foreach f (`grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[[:space:]]*$'`)
   if ( -f "$f" ) then
@@ -1029,6 +1037,7 @@ if ( "$ICC2_HOME" != "" ) then
   endif
 endif
 endif
+cd "$_orig_dir"
 ZZLABEFSCSH
 chmod 644 /etc/profile.d/zz-lab-efs-tools.csh 2>/dev/null || true
 for skel_rc in .tcshrc .cshrc; do
@@ -1104,12 +1113,12 @@ if [[ "$LAB_SSSD_SH" == *tcsh* ]]; then
     command -v yum >/dev/null 2>&1 && yum -q -y install tcsh 2>&1 || true
   fi
 fi
-export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:$$PATH"
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:$PATH"
 
 # AWS CLI v2 — use lab_aws() for all CLI calls (prefers /usr/local/bin/aws after successful zip install).
 lab_ensure_awscli_v2 || true
 if [ -x /usr/local/bin/aws ]; then
-  export PATH="/usr/local/bin:/usr/local/sbin:$$PATH"
+  export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
 fi
 lab_aws() {
   if [ -x /usr/local/bin/aws ]; then
@@ -1554,6 +1563,9 @@ systemctl reset-failed dcvserver 2>/dev/null || true
 #   sudo dcv create-session 'SumedhaIT_<user>' --owner '<upn>' --user '<posix>' --type virtual
 # See lab-docs/_dcv_doc_snippet.txt Step 3.3 (create-session=false).
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
+[server]
+client-eviction-policy = "same-user-oldest-connection"
+
 [security]
 authentication="system"
 pam-service-name="dcv"
@@ -1610,6 +1622,17 @@ fi
 systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
+
+# Custom translation patch for NICE DCV duplicate session eviction warning
+lab_log "Customizing DCV connection closed message..."
+if [ -d /usr/share/dcv/www ]; then
+  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed\.|You already have an active session/connection running in the browser\.|g' {} + || true
+  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed|You already have an active session/connection running in the browser|g' {} + || true
+  lab_log "DCV connection closed message customized successfully."
+else
+  lab_log "WARN: /usr/share/dcv/www not found, skipping DCV message customization."
+fi
+
 systemctl restart dcvserver || true
 lab_log "DCV service restarted post-config (/etc unit + vendor quarantine + zzzzzzzz drop-in + dcv.conf)"
 

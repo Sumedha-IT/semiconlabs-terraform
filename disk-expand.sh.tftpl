@@ -1,0 +1,21 @@
+#!/bin/bash
+# post‑OS disk expansion – idempotent
+set -euo pipefail
+LOG=/var/log/lab-disk-expand.log
+exec > >(tee -a "$LOG") 2>&1
+
+echo "=== Disk expansion start $(date) ==="
+# Install growpart if missing
+if ! command -v growpart &>/dev/null; then
+  dnf install -y cloud-utils-growpart
+fi
+# Grow the second partition on the NVMe device
+if ! lsblk /dev/nvme0n1p2 &>/dev/null; then
+  echo "WARN: /dev/nvme0n1p2 not found – skipping"
+else
+  growpart /dev/nvme0n1 2 || true
+  pvresize /dev/nvme0n1p2 || true
+  lvextend -r -l +100%FREE /dev/cl/root || true
+fi
+
+echo "=== Disk expansion complete $(date) ==="

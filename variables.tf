@@ -44,21 +44,21 @@ variable "delete_root_volume_on_termination" {
 }
 
 variable "subnet_id" {
-  description = "Subnet ID where lab EC2 is launched (staging private subnet default)"
+  description = "Subnet ID where lab EC2 is launched. Override via terraform.tfvars or backend LAB_PRIVATE_SUBNET_ID."
   type        = string
-  default     = "subnet-0c4d6990bb08a09b2"
+  default     = ""
 }
 
 variable "lab_security_group_id" {
   description = "Security group attached to lab EC2 (VPC-scoped). Override per env via terraform.tfvars or backend LAB_SECURITY_GROUP_ID."
   type        = string
-  default     = "sg-04430765f75fb1634"
+  default     = ""
 }
 
 variable "iam_instance_profile_name" {
-  description = "EC2 instance profile for SSM / AD join / EFS API (e.g. LabSSMRole or slabs-prod-labssmRole)."
+  description = "EC2 instance profile for SSM / AD join / EFS API (e.g. slabs-prod-labssmRole)."
   type        = string
-  default     = "LabSSMRole"
+  default     = ""
 }
 
 variable "associate_public_ip_address" {
@@ -79,22 +79,22 @@ variable "suffix" {
   # default = "Koushal-Manual_"
 }
 
-# Lab fleet: staging vs production (controls EC2 Name tag + PEM file prefix in main.tf locals).
+# Kept for backend tfvars compatibility; must stay production in this repository.
 variable "lab_environment" {
-  description = "staging | production — Name tag SemiconLab-Staging-Instance-<suffix> or SemiconLab-Prod-Instance-<suffix>"
+  description = "Must be production (staging fleet uses staging-labs-tf)."
   type        = string
-  default     = "staging"
+  default     = "production"
 
   validation {
-    condition     = contains(["staging", "production"], var.lab_environment)
-    error_message = "lab_environment must be staging or production."
+    condition     = var.lab_environment == "production"
+    error_message = "lab_environment must be production in semiconlabs-terraform. Use staging-labs-tf for staging labs."
   }
 }
 
 variable "env_tag" {
-  description = "EC2 ENV tag value (backend sets LABS-PROD or LABS-STAGING; patched into instance tags at apply time)."
+  description = "EC2 ENV tag value (backend sets LABS-PROD; patched into instance tags at apply time)."
   type        = string
-  default     = "LABS-STAGING"
+  default     = "LABS-PROD"
 }
 
 variable "aws_region" {
@@ -114,7 +114,7 @@ variable "bootstrap_s3_bucket" {
 variable "ad_directory_id" {
   description = "Directory Service id (d-xxxxxxxxxx). Required when enable_ad_join=true and ad_join_mechanism=ssm_aws_managed."
   type        = string
-  default     = "d-9f67755145"
+  default     = ""
 }
 
 variable "ad_join_mechanism" {
@@ -164,9 +164,9 @@ variable "enable_ad_join" {
 }
 
 variable "ad_domain" {
-  description = "AD DNS domain / Kerberos realm name. Matches AD_DOMAIN in Semiconlabs-backend .env (staging: sumedhalabs.com; production: semiconlabs.com)."
+  description = "AD DNS domain / Kerberos realm name. Matches AD_DOMAIN in Semiconlabs-backend .env (production: semiconlabs.com)."
   type        = string
-  default     = "sumedhalabs.com"
+  default     = "semiconlabs.com"
 }
 
 variable "ad_extra_upn_suffixes" {
@@ -195,7 +195,7 @@ variable "ad_join_password" {
   EOT
   type        = string
   sensitive   = true
-  default     = "Sumedhalabs@2026"
+  default     = ""
 }
 
 variable "ad_join_password_ssm_parameter_name" {
@@ -228,7 +228,7 @@ variable "ad_dns_ips" {
     are still applied on the instance resolver via user-data.
   EOT
   type        = list(string)
-  default     = ["10.10.149.108", "10.10.136.0"]
+  default     = []
 }
 
 variable "dcv_use_console_sessions" {
@@ -282,7 +282,7 @@ variable "ad_sssd_default_shell" {
 # EFS NFS host (DNS only, no ":/" suffix). User-data mounts nfs4 host:/ once to /efs (EFS does not export subpaths as separate NFS roots).
 variable "lab_efs_nfs_host" {
   type        = string
-  default     = "fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com"
+  default     = ""
   description = "EFS filesystem DNS name for lab mounts (same region as instance). Empty string skips all EFS logic in user-data."
 }
 
@@ -309,7 +309,7 @@ variable "lab_efs_aws_ip_fallback" {
 # Set via Terraform tfvars or backend env LAB_EFS_MOUNT_TARGET_IP at apply time.
 variable "lab_efs_mount_target_ip" {
   type        = string
-  default     = "10.10.3.41"
+  default     = ""
   description = "EFS mount-target IPv4 for fstab + nfs4 mount when VPC DNS/API fallback fail. Override per env or set LAB_EFS_MOUNT_TARGET_IP in backend. Empty skips static IP path."
 }
 

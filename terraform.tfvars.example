@@ -1,28 +1,5 @@
-# Copy to terraform.tfvars (gitignored) and adjust.
-# Bootstrap: full script in S3 (bootstrap-full.sh.tftpl); EC2 user-data is a small stub only (16 KiB gzip cap).
-# bootstrap_s3_bucket — same bucket as backend AWS_S3_LAB_TERRAFORM_BUCKET / LAB_BOOTSTRAP_S3_BUCKET.
-# bootstrap_s3_bucket = "your-lab-terraform-state-bucket"
-# Current golden lab AMI (ap-south-1, GNOME+DCV+PAM; AD join via bootstrap-full + SSM):
-ami_id = "ami-066401294ec783ea4"
-
-# Domain join (realm_userdata): defaults also in variables.tf — override here to avoid committing secrets.
-# Default join user is AWS Managed Microsoft AD **admin** (SAM); replace with a delegated Joiners user when ready.
-# ad_join_user     = "admin"
-# ad_join_user     = "slabs-user@SUMEDHALABS.COM"   # UPN with Kerberos realm (not @sumedhalabs.com) if needed
-# ad_join_password = "your-join-password"
-
-# Optional overrides — defaults also live in variables.tf
-# instance_type = "m6a.xlarge"
-# subnet_id     = "subnet-0c4d6990bb08a09b2"
-# lab_security_group_id     = "sg-04430765f75fb1634"
-# iam_instance_profile_name = "LabSSMRole"
-# Production template: terraform.tfvars.production.example
-# Default SSSD shell is /bin/tcsh; use bash if needed:
-# ad_sssd_default_shell = "/bin/bash"
-# EFS: DNS only (see variables.tf defaults). Mount only one tool tree for group-scoped labs:
-# lab_efs_tools_mount_codes = ["PD"]
-# lab_efs_tools_mount_codes = ["DV"]
-# lab_efs_tools_mount_codes = ["AL"]
-# lab_efs_nfs_host = "fs-xxxx.efs.ap-south-1.amazonaws.com"
-# lab_efs_mount_target_ip = "10.10.3.41"
-# Backend: LAB_EFS_MOUNT_TARGET_IP=10.10.3.41 (passed at terraform apply)
+# Production manual apply — use terraform.tfvars.production.example as the template.
+# Staging labs: staging-labs-tf repository (not this repo).
+#
+# lab_environment = "production"   # required here
+# Backend Start Lab writes tfvars from .env — see .env.production.example
