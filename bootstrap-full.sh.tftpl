@@ -1671,11 +1671,12 @@ systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
 
 # Custom translation patch for NICE DCV duplicate session eviction warning
-lab_log "Customizing DCV connection closed message..."
+lab_log "Customizing DCV connection closed message and tab close warning..."
 if [ -d /usr/share/dcv/www ]; then
   find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed\.|You already have an active session/connection running in the browser\.|g' {} + || true
   find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed|You already have an active session/connection running in the browser|g' {} + || true
-  lab_log "DCV connection closed message customized successfully."
+  find /usr/share/dcv/www -type f -name "*.html" -exec sed -i 's|</head>|<script>window.addEventListener("beforeunload", function (e) { var message = "Lab is still running/working in progress. If you close this tab also lab will continue unless you clicked on stop lab."; (e || window.event).returnValue = message; return message; });</script></head>|g' {} + || true
+  lab_log "DCV connection closed message and tab close warning customized successfully."
 else
   lab_log "WARN: /usr/share/dcv/www not found, skipping DCV message customization."
 fi
