@@ -1462,7 +1462,7 @@ lab_log "Customizing DCV connection closed message and tab close warning..."
 if [ -d /usr/share/dcv/www ]; then
   find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed\.|You already have an active session/connection running in the browser\.|g' {} + || true
   find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed|You already have an active session/connection running in the browser|g' {} + || true
-  find /usr/share/dcv/www -type f -name "*.js" -exec sh -c 'echo "if (!window.__beforeunload_registered) { window.__beforeunload_registered = true; window.addEventListener(\"beforeunload\", function (e) { e.preventDefault(); e.returnValue = \"Lab is still running/working in progress. If you close this tab also lab will continue unless you clicked on stop lab.\"; return e.returnValue; }); }" >> "$1"' _ {} \; || true
+  find /usr/share/dcv/www -type f -name "*.js" -exec sh -c 'echo "if (!window.__beforeunload_registered) { window.__beforeunload_registered = true; alert(\"Lab is still running/working in progress. If you close this tab also lab will continue unless you clicked on stop lab.\"); window.addEventListener(\"beforeunload\", function (e) { e.preventDefault(); e.returnValue = \"Lab is still running/working in progress. If you close this tab also lab will continue unless you clicked on stop lab.\"; return e.returnValue; }); }" >> "$1"' _ {} \; || true
   lab_log "DCV connection closed message and tab close warning customized successfully."
 else
   lab_log "WARN: /usr/share/dcv/www not found, skipping DCV message customization."
