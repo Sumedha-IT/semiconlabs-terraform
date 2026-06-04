@@ -94,6 +94,7 @@ resource "aws_instance" "CentOS8-AMD" {
 
   root_block_device {
     volume_size           = var.root_volume_size
+    volume_type           = "gp3"
     encrypted             = true
     delete_on_termination = var.delete_root_volume_on_termination
   }
