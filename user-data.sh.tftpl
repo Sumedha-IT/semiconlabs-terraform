@@ -1462,8 +1462,28 @@ lab_log "Customizing DCV connection closed message and tab close warning..."
 if [ -d /usr/share/dcv/www ]; then
   find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed\.|You already have an active session/connection running in the browser\.|g' {} + || true
   find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed|You already have an active session/connection running in the browser|g' {} + || true
+  
+  cat << 'EOF' > /usr/share/dcv/www/custom-popup.js
+if (!window.__beforeunload_registered) {
+  window.__beforeunload_registered = true;
+  var show = true;
+  try {
+    var count = parseInt(localStorage.getItem("lab_warn_count") || "0", 10);
+    if (count >= 3) {
+      show = false;
+    } else {
+      localStorage.setItem("lab_warn_count", count + 1);
+    }
+  } catch (e) {}
+  if (show) {
+    alert("Important: Closing this browser tab does NOT stop your lab session. It will continue running in the background. To end your session and stop billing/usage, please click \"Stop Lab\" on the main portal.");
+  }
+}
+EOF
+  chmod 644 /usr/share/dcv/www/custom-popup.js || true
+
   if [ -f /usr/share/dcv/www/index.html ]; then
-    sed -i 's|</head>|<script>if (!window.__beforeunload_registered) { window.__beforeunload_registered = true; var show = true; try { var count = parseInt(localStorage.getItem("lab_warn_count") || "0", 10); if (count >= 3) { show = false; } else { localStorage.setItem("lab_warn_count", count + 1); } } catch (e) {} if (show) { alert("Important: Closing this browser tab does NOT stop your lab session. It will continue running in the background. To end your session and stop billing/usage, please click \"Stop Lab\" on the main portal."); } }</script></head>|g' /usr/share/dcv/www/index.html || true
+    sed -i 's|</head>|<script src="custom-popup.js"></script></head>|g' /usr/share/dcv/www/index.html || true
   fi
   lab_log "DCV connection closed message and tab close warning customized successfully."
 else
