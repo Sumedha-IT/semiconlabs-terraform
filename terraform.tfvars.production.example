@@ -4,8 +4,8 @@
 lab_environment            = "production"
 ami_id                     = "ami-066401294ec783ea4"
 instance_type              = "m6a.xlarge"
-subnet_id                  = "subnet-05d6c2809dcd0010d"   # pick one private lab subnet
-lab_security_group_id      = "sg-0653bee39065a9d2c"
+subnet_id                  = "subnet-095905a6af90f3c5c"   # semecon-labs-prod-lab-private-1 (no NAT)
+lab_security_group_id      = "sg-0addb5436378bc42a"       # semecon-labs-prod-lab-only-sg (restricted egress)
 iam_instance_profile_name  = "slabs-prod-labssmRole"
 associate_public_ip_address = false
 

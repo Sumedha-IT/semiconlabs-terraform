@@ -44,13 +44,13 @@ variable "delete_root_volume_on_termination" {
 }
 
 variable "subnet_id" {
-  description = "Subnet ID where lab EC2 is launched. Override via terraform.tfvars or backend LAB_PRIVATE_SUBNET_ID."
+  description = "Subnet ID where lab EC2 is launched. Prod: subnet-095905a6af90f3c5c (lab-private-1, no NAT). Override via backend LAB_PRIVATE_SUBNET_ID."
   type        = string
   default     = ""
 }
 
 variable "lab_security_group_id" {
-  description = "Security group attached to lab EC2 (VPC-scoped). Override per env via terraform.tfvars or backend LAB_SECURITY_GROUP_ID."
+  description = "Security group attached to lab EC2. Prod: sg-0addb5436378bc42a (lab-only-sg). Override via backend LAB_SECURITY_GROUP_ID."
   type        = string
   default     = ""
 }
@@ -89,6 +89,18 @@ variable "lab_environment" {
     condition     = var.lab_environment == "production"
     error_message = "lab_environment must be production in semiconlabs-terraform. Use staging-labs-tf for staging labs."
   }
+}
+
+variable "lab_bootstrap_log_group" {
+  description = "CloudWatch log group for lab VM bootstrap logs (Phase 2 monitoring)."
+  type        = string
+  default     = "/labs/bootstrap/production"
+}
+
+variable "lab_monitoring_enabled" {
+  description = "Upload bootstrap log tail + CloudWatch metrics at end of user-data."
+  type        = bool
+  default     = true
 }
 
 variable "env_tag" {

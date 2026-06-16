@@ -969,6 +969,10 @@ lab_aws() {
 LAB_AWS_BOOT_LINE=$(lab_aws --version 2>&1 | head -1) || LAB_AWS_BOOT_LINE='(lab_aws failed)'
 lab_log "bootstrap aws: $LAB_AWS_BOOT_LINE"
 
+%{ if lab_monitoring_enabled ~}
+${lab_bootstrap_monitoring_script}
+%{ endif ~}
+
 %{ if enable_ad_join ~}
 lab_log "AD phase: mechanism=${ad_join_mechanism} domain=${ad_domain}"
 
@@ -1410,8 +1414,9 @@ create-session = false
 # X session often exits immediately and list-sessions stays empty after create-session returns 0.
 enable-gl-in-virtual-sessions = always-off
 
-[clipboard]
-enable=false
+[display]
+max-num-heads=1
+enable-client-resize=false
 
 [log]
 log-level=debug
@@ -1427,6 +1432,14 @@ enable-quic-frontend=false
 %{ endif ~}
 idle-timeout=0
 EOF
+
+# Block DCV client ↔ VM clipboard only; in-session copy/paste inside the desktop still works.
+cat >/etc/dcv/default.perm <<'DCVPERM'
+[permissions]
+%any% deny clipboard-copy clipboard-paste
+DCVPERM
+chmod 644 /etc/dcv/default.perm 2>/dev/null || true
+lab_log "DCV: installed /etc/dcv/default.perm (deny client clipboard-copy/paste only; in-session clipboard enabled)"
 # DCV 2025 + Type=dbus: websocket path uses AF_INET6. ipv6.disable=1 in kernel cmdline removes the whole stack
 # (/proc/sys/net/ipv6 never appears; modprobe ipv6 cannot fix until grub is updated and the instance reboots).
 if grep -q 'ipv6.disable=1' /proc/cmdline 2>/dev/null; then
@@ -1535,3 +1548,6 @@ else
   lab_log "BOOTSTRAP FAILED — AD join required for learner DCV; log=$LOG"
   echo "========== BOOTSTRAP FAILED (AD) =========="
 fi
+%{ if lab_monitoring_enabled ~}
+lab_publish_bootstrap_monitoring "$${LAB_BOOTSTRAP_TAG}" || true
+%{ endif ~}

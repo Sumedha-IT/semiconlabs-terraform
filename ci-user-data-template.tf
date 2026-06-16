@@ -28,6 +28,14 @@ locals {
     lab_efs_tool_profile_b64                  = ""
     lab_efs_open_tool_execute                 = var.lab_efs_open_tool_execute
     lab_ssh_public_key_b64                    = ""
+    lab_environment                           = var.lab_environment
+    lab_bootstrap_log_group                   = var.lab_bootstrap_log_group
+    lab_monitoring_enabled                    = var.lab_monitoring_enabled
+    lab_bootstrap_monitoring_script           = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {
+      aws_region              = var.aws_region
+      lab_bootstrap_log_group = var.lab_bootstrap_log_group
+      lab_environment         = var.lab_environment
+    }) : ""
   })
   ci_user_data_gzip_b64 = base64gzip(local.ci_user_data_rendered)
 }

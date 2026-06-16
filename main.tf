@@ -48,7 +48,15 @@ locals {
 
   # TEMP (prod): monolithic user-data — keep under 16 KiB gzip. Do not embed large per-lab blobs here.
   lab_user_data_rendered = templatefile("${path.module}/user-data.sh.tftpl", merge(local.lab_user_data_template_vars, {
-    lab_efs_tool_profile_b64 = ""
+    lab_efs_tool_profile_b64        = ""
+    lab_environment                 = var.lab_environment
+    lab_bootstrap_log_group         = var.lab_bootstrap_log_group
+    lab_monitoring_enabled          = var.lab_monitoring_enabled
+    lab_bootstrap_monitoring_script = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {
+      aws_region              = var.aws_region
+      lab_bootstrap_log_group = var.lab_bootstrap_log_group
+      lab_environment         = var.lab_environment
+    }) : ""
   }))
   lab_user_data_gzip_b64 = base64gzip(local.lab_user_data_rendered)
 

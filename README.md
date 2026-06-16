@@ -17,6 +17,15 @@ Required backend `.env` overrides are merged at apply time — see `Semiconlabs-
 
 Monolithic `user-data.sh.tftpl` (gzip, 16 KiB EC2 limit). Plan fails if over limit (`user-data-size.tf`). S3 split (`bootstrap-full.sh.tftpl` + stub) is prepared but commented in `main.tf`.
 
+## DCV hardening (user-data)
+
+New lab instances get from `user-data.sh.tftpl`:
+
+- **Clipboard:** `/etc/dcv/default.perm` blocks client ↔ VM only; in-session copy/paste works
+- **Single monitor:** `[display] max-num-heads=1`, `enable-client-resize=false`
+
+Internet egress (VPC endpoints, lab SG rules) is managed in **slabs infra / AWS Console** — not this repo. See `lab-internet-restriction-cli-runbook.md`.
+
 ## Local prod-shaped apply
 
 ```bash

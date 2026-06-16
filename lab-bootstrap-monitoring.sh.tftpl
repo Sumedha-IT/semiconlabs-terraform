@@ -1,0 +1,46 @@
+# Compact bootstrap telemetry (Phase 2). Included from user-data.sh.tftpl.
+# Requires IAM: logs:PutLogEvents + cloudwatch:PutMetricData on SemiconLabs/LabVM.
+
+lab_publish_bootstrap_monitoring() {
+  local tag="$${1:-$${LAB_BOOTSTRAP_TAG:-UNKNOWN}}"
+  local lg="${lab_bootstrap_log_group}"
+  [ -n "$lg" ] || return 0
+  command -v jq >/dev/null 2>&1 || { lab_log "WARN jq missing; skip bootstrap monitoring"; return 0; }
+  local iid="$${INSTANCE_ID:-unknown}"
+  local rid="${aws_region}"
+  local env="${lab_environment}"
+  local ns="SemiconLabs/LabVM"
+  local mv=0
+  [ "$tag" = "READY" ] && mv=1
+  local md
+  md=$(jq -n --arg env "$env" --arg iid "$iid" --argjson v "$mv" \
+    '[{MetricName:"BootstrapStatus",Value:$v,Unit:"Count",Dimensions:[{Name:"LabEnvironment",Value:$env},{Name:"InstanceId",Value:$iid}]}]')
+  lab_aws cloudwatch put-metric-data --region "$rid" --namespace "$ns" --metric-data "$md" \
+    2>/dev/null || lab_log "WARN put-metric-data BootstrapStatus failed"
+  if [ "$tag" = "FAILED" ]; then
+    md=$(jq -n --arg env "$env" \
+      '[{MetricName:"BootstrapFailed",Value:1,Unit:"Count",Dimensions:[{Name:"LabEnvironment",Value:$env}]}]')
+    lab_aws cloudwatch put-metric-data --region "$rid" --namespace "$ns" --metric-data "$md" \
+      2>/dev/null || lab_log "WARN put-metric-data BootstrapFailed failed"
+  fi
+  local ts=$(($(date +%s)*1000))
+  local seq=""
+  seq=$(lab_aws logs describe-log-streams --region "$rid" --log-group-name "$lg" \
+    --log-stream-name-prefix "$iid" --query 'logStreams[0].uploadSequenceToken' --output text 2>/dev/null || true)
+  lab_aws logs create-log-stream --region "$rid" --log-group-name "$lg" --log-stream-name "$iid" 2>/dev/null || true
+  local body
+  body=$(tail -n 120 "$LOG" 2>/dev/null || true)
+  [ -n "$body" ] || body="(empty bootstrap log)"
+  local events
+  events=$(jq -n --arg m "$body" --argjson t "$ts" '[{timestamp:$t,message:$m}]')
+  if [ -n "$seq" ] && [ "$seq" != "None" ] && [ "$seq" != "null" ]; then
+    lab_aws logs put-log-events --region "$rid" --log-group-name "$lg" --log-stream-name "$iid" \
+      --sequence-token "$seq" --log-events "$events" 2>/dev/null \
+      || lab_log "WARN put-log-events failed"
+  else
+    lab_aws logs put-log-events --region "$rid" --log-group-name "$lg" --log-stream-name "$iid" \
+      --log-events "$events" 2>/dev/null \
+      || lab_log "WARN put-log-events failed"
+  fi
+  lab_log "bootstrap monitoring published tag=$tag log_group=$lg"
+}
