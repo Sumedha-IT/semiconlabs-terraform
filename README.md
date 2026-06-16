@@ -22,7 +22,7 @@ Monolithic `user-data.sh.tftpl` (gzip, 16 KiB EC2 limit). Plan fails if over lim
 New lab instances get from `user-data.sh.tftpl`:
 
 - **Clipboard:** `/etc/dcv/default.perm` blocks client ↔ VM only; in-session copy/paste works
-- **Single monitor:** `[display] max-num-heads=1`, `enable-client-resize=false`
+- **Single monitor:** `[display] max-num-heads=1`, `enable-client-resize=true` (fills browser viewport)
 
 Internet egress (VPC endpoints, lab SG rules) is managed in **slabs infra / AWS Console** — not this repo. See `lab-internet-restriction-cli-runbook.md`.
 
