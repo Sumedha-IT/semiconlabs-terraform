@@ -179,22 +179,27 @@ lab_log "lab SSH pubkey: skipped (backend SSM inject)"
 
 lab_log "checking pre-installed early packages..."
 MISSING_PKGS=""
-RPM_CRASHED=0
+PKG_DB_CRASHED=0
 ( rpm --rebuilddb >/dev/null 2>&1 ) || true
 for pkg in realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli; do
   _pkg_ok=0
+  _rc=1
   if command -v dnf >/dev/null 2>&1; then
-    dnf -q list installed "$pkg" &>/dev/null && _pkg_ok=1
+    ( dnf -q list installed "$pkg" &>/dev/null ); _rc=$?
   else
     ( rpm -q "$pkg" >/dev/null 2>&1 ); _rc=$?
-    [ "$_rc" -eq 0 ] && _pkg_ok=1
-    [ "$_rc" -ge 128 ] && RPM_CRASHED=1
+  fi
+  if [ "$_rc" -eq 0 ]; then
+    _pkg_ok=1
+  elif [ "$_rc" -ge 128 ]; then
+    PKG_DB_CRASHED=1
   fi
   [ "$_pkg_ok" -eq 1 ] || MISSING_PKGS="$MISSING_PKGS $pkg"
 done
-if [ "$RPM_CRASHED" -eq 1 ]; then
-  lab_log "WARN rpm db unstable; running rpm --rebuilddb before install"
+if [ "$PKG_DB_CRASHED" -eq 1 ]; then
+  lab_log "WARN dnf/rpm probe crashed (SIGBUS); rebuilddb + dnf install full early set"
   rpm --rebuilddb 2>&1 || true
+  MISSING_PKGS=" realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli"
 fi
 if [ -n "$MISSING_PKGS" ]; then
   lab_log "installing missing packages:$MISSING_PKGS"
