@@ -1700,6 +1700,8 @@ EOF
 else
   lab_log "WARN: /usr/share/dcv/www not found, skipping DCV message customization."
 fi
+install -d /etc/lab
+date -u +%Y-%m-%dT%H:%M:%SZ >/etc/lab/dcv-www-ux-v2.done
 
 systemctl restart dcvserver || true
 lab_log "DCV service restarted post-config (/etc unit + vendor quarantine + zzzzzzzz drop-in + dcv.conf)"

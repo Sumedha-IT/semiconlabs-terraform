@@ -1338,6 +1338,8 @@ DCVPOP
     sed -i 's|</head>|<script src="custom-popup.js"></script></head>|' /usr/share/dcv/www/index.html 2>/dev/null || true
   fi
 fi
+install -d /etc/lab
+date -u +%Y-%m-%dT%H:%M:%SZ >/etc/lab/dcv-www-ux-v2.done
 
 systemctl restart dcvserver || true
 sudo dcv close-session console 2>/dev/null || true

@@ -58,8 +58,7 @@ if [ -f /usr/share/dcv/www/index.html ] && ! grep -q custom-popup.js /usr/share/
   sed -i 's|</head>|<script src="custom-popup.js"></script></head>|' /usr/share/dcv/www/index.html 2>/dev/null || true
 fi
 
-systemctl restart dcvserver 2>/dev/null || true
-
+# Do not restart dcvserver — kills active virtual sessions on running labs.
 install -d /etc/lab
 rm -f /etc/lab/dcv-www-ux-v1.done 2>/dev/null || true
 date -u +%Y-%m-%dT%H:%M:%SZ >"$MARKER"
