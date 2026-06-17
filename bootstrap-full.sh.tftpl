@@ -1154,11 +1154,9 @@ chmod 644 /etc/cron.d/semiconlabs-lab-efs-mount 2>/dev/null || true
 systemctl daemon-reload || true
 systemctl enable lab-efs-mount.service 2>/dev/null || true
 lab_log "EFS: enabled lab-efs-mount.service + @reboot cron (no fstab; remount every boot)"
-if /usr/local/sbin/lab-efs-mount.sh; then
-  lab_log "EFS: bootstrap mount OK (see /var/log/lab-bootstrap.log)"
-else
-  lab_log "WARN EFS: bootstrap mount failed — check SG 2049, mount target AZ, LAB_EFS_MOUNT_TARGET_IP"
-fi
+# Do not block AD join on NFS: sync mount was 6×90s timeouts (~15 min) before LabBootstrap=READY.
+lab_log "EFS: starting lab-efs-mount.service in background (AD join is critical path)"
+systemctl start lab-efs-mount.service 2>/dev/null &
 %{ else ~}
 lab_log "EFS: skipped (lab_efs_nfs_host empty)"
 %{ endif ~}
