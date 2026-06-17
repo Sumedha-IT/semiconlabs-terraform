@@ -15,7 +15,7 @@ variable "instance_name" {
 variable "ami_id" {
   description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM pre-baked; AD join + SSSD finalize in user-data / SSM)"
   type        = string
-  default     = "ami-066401294ec783ea4"
+  default     = "ami-0248f6f933f83696c"
 }
 
 variable "name" {
@@ -101,6 +101,36 @@ variable "lab_monitoring_enabled" {
   description = "Upload bootstrap log tail + CloudWatch metrics at end of user-data."
   type        = bool
   default     = true
+}
+
+variable "enable_ec2_detailed_monitoring" {
+  description = "Enable EC2 detailed monitoring (1-min CPU/network metrics, ~$2.30/VM/month)."
+  type        = bool
+  default     = true
+}
+
+variable "lab_health_log_group" {
+  description = "CloudWatch log group for periodic guest health snapshots (defaults to bootstrap log group)."
+  type        = string
+  default     = "/labs/bootstrap/production"
+}
+
+variable "lab_health_interval_min" {
+  description = "Guest health snapshot interval (minutes). 15 keeps log/metric cost low at scale."
+  type        = number
+  default     = 15
+}
+
+variable "lab_health_mem_alert_pct" {
+  description = "Guest [LabHealthAlert] when memory used percent >= this."
+  type        = number
+  default     = 80
+}
+
+variable "lab_health_disk_alert_pct" {
+  description = "Guest [LabHealthAlert] when root disk used percent >= this."
+  type        = number
+  default     = 90
 }
 
 variable "env_tag" {

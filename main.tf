@@ -53,9 +53,13 @@ locals {
     lab_bootstrap_log_group         = var.lab_bootstrap_log_group
     lab_monitoring_enabled          = var.lab_monitoring_enabled
     lab_bootstrap_monitoring_script = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {
-      aws_region              = var.aws_region
-      lab_bootstrap_log_group = var.lab_bootstrap_log_group
-      lab_environment         = var.lab_environment
+      aws_region                = var.aws_region
+      lab_bootstrap_log_group   = var.lab_bootstrap_log_group
+      lab_environment           = var.lab_environment
+      lab_health_log_group      = var.lab_health_log_group
+      lab_health_interval_min   = var.lab_health_interval_min
+      lab_health_mem_alert_pct  = var.lab_health_mem_alert_pct
+      lab_health_disk_alert_pct = var.lab_health_disk_alert_pct
     }) : ""
   }))
   lab_user_data_gzip_b64 = base64gzip(local.lab_user_data_rendered)
@@ -99,6 +103,7 @@ resource "aws_instance" "CentOS8-AMD" {
   associate_public_ip_address = var.associate_public_ip_address
   vpc_security_group_ids      = [var.lab_security_group_id]
   iam_instance_profile        = var.iam_instance_profile_name
+  monitoring                  = var.enable_ec2_detailed_monitoring
 
   root_block_device {
     volume_size           = var.root_volume_size
