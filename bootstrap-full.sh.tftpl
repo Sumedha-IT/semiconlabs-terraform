@@ -443,40 +443,17 @@ lab_log "lab SSH pubkey: skipped in user-data (backend SSM inject); keeps gzip u
 
 # AD + aws RPMs BEFORE EFS: nfs-utils (mount.nfs4), bind-utils (host/getent), awscli (DescribeMountTargets when VPC DNS fails on EFS hostname).
 # tcsh/csh: required for learner DCV shells (SSSD default_shell often /bin/tcsh on PD/AL/DV labs).
-lab_log "checking pre-installed early packages..."
-MISSING_PKGS=""
-PKG_DB_CRASHED=0
-( rpm --rebuilddb >/dev/null 2>&1 ) || true
-for pkg in realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli; do
-  _pkg_ok=0
-  _rc=1
-  if command -v dnf >/dev/null 2>&1; then
-    ( dnf -q list installed "$pkg" &>/dev/null ); _rc=$?
-  else
-    ( rpm -q "$pkg" >/dev/null 2>&1 ); _rc=$?
-  fi
-  if [ "$_rc" -eq 0 ]; then
-    _pkg_ok=1
-  elif [ "$_rc" -ge 128 ]; then
-    PKG_DB_CRASHED=1
-  fi
-  [ "$_pkg_ok" -eq 1 ] || MISSING_PKGS="$MISSING_PKGS $pkg"
-done
-if [ "$PKG_DB_CRASHED" -eq 1 ]; then
-  lab_log "WARN dnf/rpm probe crashed (SIGBUS); rebuilddb + dnf install full early set"
-  rpm --rebuilddb 2>&1 || true
-  MISSING_PKGS=" realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli"
+# Golden AMI rpm/dnf Berkeley DB can SIGBUS on *any* list/query — even in a subshell
+# it aborts cloud-init on CentOS 8. Never call rpm -q or dnf list; idempotent install only.
+lab_log "installing early packages (idempotent dnf/yum; no rpm/dnf db probe)"
+rpm --rebuilddb 2>/dev/null || true
+EARLY_PKGS="realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli"
+if command -v dnf >/dev/null 2>&1; then
+  dnf -q -y install $EARLY_PKGS 2>&1 || true
+elif command -v yum >/dev/null 2>&1; then
+  yum -q -y install $EARLY_PKGS 2>&1 || true
 fi
-if [ -n "$MISSING_PKGS" ]; then
-  lab_log "installing missing packages:$MISSING_PKGS"
-  if command -v dnf >/dev/null 2>&1; then
-    dnf -q -y install $MISSING_PKGS 2>&1 || true
-  elif command -v yum >/dev/null 2>&1; then
-    yum -q -y install $MISSING_PKGS 2>&1 || true
-  fi
-else
-  lab_log "all early packages are already installed (dnf/yum fetch skipped)"
-fi
+lab_log "early package install pass complete"
 if command -v tcsh >/dev/null 2>&1; then
   lab_log "tcsh present: $(tcsh --version 2>&1 | head -1)"
 else
