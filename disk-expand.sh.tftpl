@@ -5,11 +5,7 @@ LOG=/var/log/lab-disk-expand.log
 exec > >(tee -a "$LOG") 2>&1
 
 echo "=== Disk expansion start $(date) ==="
-# Install growpart if missing
-if ! command -v growpart &>/dev/null; then
-  dnf install -y cloud-utils-growpart
-fi
-# Grow the second partition on the NVMe device
+# growpart is pre-installed on golden AMI; do not call dnf here (SIGBUS on corrupt rpm DB).
 if ! lsblk /dev/nvme0n1p2 &>/dev/null; then
   echo "WARN: /dev/nvme0n1p2 not found – skipping"
 else
