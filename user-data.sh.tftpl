@@ -1,10 +1,5 @@
 #!/bin/bash
-# LEGACY — do not grow this file for new labs. Use bootstrap-full.sh.tftpl (uploaded to S3)
-# + user-data-stub.sh.tftpl (EC2 user-data). See main.tf lab_bootstrap_* locals.
-# `-e` removed: this script intentionally tolerates individual command failures
-# (each critical step has its own `|| true` / explicit error log). With `-e`,
-# any non-handled failure would abort bootstrap silently — including the AD-join
-# phase — leaving the instance unusable.
+# Keep gzip user-data <= 16384 B; grow via bootstrap-full on S3 + stub (see main.tf).
 set -uo pipefail
 
 LOG=/var/log/lab-bootstrap.log
@@ -14,79 +9,13 @@ lab_log() {
   echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-bootstrap] $*"
 }
 
-# TEMP: omitted from user-data (16 KiB EC2 cap + per-lab b64 blob). EFS tool env still runs via
-# lab-efs-tool-env.sh after mount; backend can apply session profile after AD user exists (SSM/SSH).
-lab_install_efs_tool_profile_from_tf() {
-  lab_log "efs_tool_profile: skipped in user-data (size); use global /etc/profile.d from lab-efs-tool-env.sh"
-  return 0
-}
-
-# Ensure every tcsh/csh session (DCV often uses short AD name, not UPN) loads vendor env.
-lab_install_global_tcsh_tool_hook() {
-  if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/csh.cshrc 2>/dev/null; then
-    {
-      echo ''
-      echo '# semiconlabs-lab-efs-tool-env'
-      echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
-    } >>/etc/csh.cshrc
-    lab_log "efs_tool_profile: hooked /etc/csh.cshrc -> zz-lab-efs-tools.csh"
-  fi
-}
-
-lab_patch_user_shell_hooks() {
-  local uname="$1" uid="$2" gid="$3" uhome="$4"
-  [ -n "$${uhome}" ] || return 0
-  install -d -m 700 -o "$${uid}" -g "$${gid}" "$${uhome}" 2>/dev/null || true
-  for rc in .tcshrc .cshrc; do
-    if ! grep -qF 'semiconlabs-lab-efs-tool-env' "$${uhome}/$${rc}" 2>/dev/null; then
-      {
-        echo '# semiconlabs-lab-efs-tool-env'
-        echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
-      } >>"$${uhome}/$${rc}"
-      chown "$${uid}:$${gid}" "$${uhome}/$${rc}" 2>/dev/null || true
-      lab_log "efs_tool_profile: appended $${rc} for $${uname} ($${uhome})"
-    fi
-  done
-}
-
-# Install AWS CLI v2 to /usr/local/bin. RPM awscli v1 often fails or mis-resolves region for
-# ssm:GetParameter / secretsmanager from user-data (empty password -> adcli join skipped).
-lab_ensure_awscli_v2() {
-  if [ -x /usr/local/bin/aws ]; then
-    lab_log "awscli v2 already present: $(/usr/local/bin/aws --version 2>&1 | head -1)"
-    return 0
-  fi
-  lab_log "installing AWS CLI v2 (SSM/Secrets API calls from user-data)"
-  dnf -q -y install unzip curl ca-certificates 2>/dev/null || yum -q -y install unzip curl ca-certificates 2>/dev/null || true
-  rm -rf /tmp/awscliv2.zip /tmp/aws 2>/dev/null || true
-  if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
-    && (cd /tmp && unzip -qo awscliv2.zip) \
-    && /tmp/aws/install --update >/dev/null 2>&1; then
-    rm -rf /tmp/aws /tmp/awscliv2.zip 2>/dev/null || true
-  fi
-  if [ -x /usr/local/bin/aws ]; then
-    lab_log "awscli v2 installed: $(/usr/local/bin/aws --version 2>&1 | head -1)"
-    export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
-    return 0
-  fi
-  lab_log "WARN awscli v2 install failed; will use PATH aws ($(command -v aws 2>/dev/null || echo none))"
-  return 1
-}
-
-lab_log "log file=$LOG (see also journalctl -u cloud-final)"
-echo "========== LAB BOOTSTRAP START =========="
-
 REGION="${aws_region}"
 IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
 INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
   "http://169.254.169.254/latest/meta-data/instance-id" || hostname)
+lab_log "bootstrap start instance=$INSTANCE_ID ad=${enable_ad_join}/${ad_join_mechanism}"
 
-# Pin AWS region for CLI and for SSM document workers (AWS-JoinDirectoryServiceDomain runs
-# `aws ds …` on the instance). If AWS_DEFAULT_REGION is unset, boto3/awscli default to
-# us-east-1, DescribeDirectories returns empty, and the document fails with:
-#   "Cannot find parent directory Id"
-# even when LabSSMRole has AmazonSSMDirectoryServiceAccess (ap-south-1 directory).
 export AWS_DEFAULT_REGION="$REGION"
 export AWS_REGION="$REGION"
 if ! grep -q '^AWS_DEFAULT_REGION=' /etc/environment 2>/dev/null; then
@@ -103,23 +32,14 @@ Environment=AWS_REGION=$REGION
 Environment=PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/sbin:/bin
 SSMENV
 systemctl daemon-reload 2>/dev/null || true
-# The agent process must restart to pick up Environment= from the drop-in. If we only
-# reload+restart much later (AD phase), the backend's explicit AWS-JoinDirectoryServiceDomain
-# SendCommand right after Terraform apply runs first — `aws ds describe-directories` then
-# defaults to us-east-1 → "Cannot find parent directory Id" even for an ap-south-1 directory.
-lab_log "ssm: restart amazon-ssm-agent immediately after region drop-in (before any Run Command)"
 systemctl restart amazon-ssm-agent.service 2>/dev/null || systemctl restart amazon-ssm-agent 2>/dev/null || true
 
-# AWS CLI v1 uses ~/.aws/config [default] region. Some SSM workers do not inherit systemd
-# Environment=; without this, AWS-JoinDirectoryServiceDomain still calls `aws ds` in us-east-1.
-# LAB_AWSCLI_ROOT_CONFIG — marker for backend clone patcher (h).
 install -d /root/.aws
 cat >/root/.aws/config <<LAB_AWSCFG
 [default]
 region = $REGION
 LAB_AWSCFG
 chmod 600 /root/.aws/config 2>/dev/null || true
-lab_log "wrote /root/.aws/config default region=$REGION (SSM Run Command / join document)"
 if id ssm-user >/dev/null 2>&1; then
   install -d /home/ssm-user/.aws
   cat >/home/ssm-user/.aws/config <<LAB_AWSCFG2
@@ -128,28 +48,23 @@ region = $REGION
 LAB_AWSCFG2
   chown -R ssm-user:ssm-user /home/ssm-user/.aws 2>/dev/null || true
   chmod 600 /home/ssm-user/.aws/config 2>/dev/null || true
-  lab_log "wrote /home/ssm-user/.aws/config default region=$REGION"
 fi
 
-lab_log "start instance_id=$INSTANCE_ID enable_ad_join=${enable_ad_join} ad_mechanism=${ad_join_mechanism} dcv_console=${dcv_use_console_sessions}"
-lab_log "instance AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION (required for SSM domain-join document)"
+lab_ensure_awscli_v2() {
+  [ -x /usr/local/bin/aws ] && return 0
+  command -v aws >/dev/null 2>&1
+}
 
-# After AD join: nsswitch + mkhomedir + SSSD tune + restarts (Idempotent).
 lab_finalize_sssd_for_dcv() {
-  lab_log "finalize_sssd_for_dcv: chronyc makestep"
   chronyc makestep 2>/dev/null || true
   DOM='${lower_ad_domain}'
   SH='${ad_sssd_default_shell}'
   if [ -f /etc/sssd/sssd.conf ] && grep -Fq "[domain/$${DOM}]" /etc/sssd/sssd.conf 2>/dev/null && ! grep -q '^default_shell' /etc/sssd/sssd.conf 2>/dev/null; then
-    lab_log "finalize_sssd_for_dcv: inserting default_shell=$${SH} under [domain/$${DOM}]"
     awk -v dom="[domain/$${DOM}]" -v line="default_shell = $${SH}" '$0 == dom { print; print line; next } { print }' /etc/sssd/sssd.conf > /tmp/sssd.lab.$$ \
       && mv /tmp/sssd.lab.$$ /etc/sssd/sssd.conf || rm -f /tmp/sssd.lab.$$
     chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
-  else
-    lab_log "finalize_sssd_for_dcv: skip default_shell (already set or no domain section)"
   fi
   if [ -f /etc/sssd/sssd.conf ] && grep -Fq "[domain/$${DOM}]" /etc/sssd/sssd.conf 2>/dev/null && ! grep -q '^override_shell' /etc/sssd/sssd.conf 2>/dev/null; then
-    lab_log "finalize_sssd_for_dcv: inserting override_shell=$${SH} (interactive shell for DCV/SSH; ignores restrictive AD loginShell)"
     if grep -q '^default_shell' /etc/sssd/sssd.conf 2>/dev/null; then
       awk -v line="override_shell = $${SH}" '/^default_shell/ { print; print line; next } { print }' /etc/sssd/sssd.conf > /tmp/sssd.lab.ov.$$ \
         && mv /tmp/sssd.lab.ov.$$ /etc/sssd/sssd.conf || rm -f /tmp/sssd.lab.ov.$$
@@ -158,23 +73,17 @@ lab_finalize_sssd_for_dcv() {
         && mv /tmp/sssd.lab.ov.$$ /etc/sssd/sssd.conf || rm -f /tmp/sssd.lab.ov.$$
     fi
     chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
-  else
-    lab_log "finalize_sssd_for_dcv: skip override_shell (already set or no domain section)"
   fi
   if command -v authselect >/dev/null 2>&1; then
-    lab_log "finalize_sssd_for_dcv: authselect sssd with-mkhomedir"
     authselect select sssd with-mkhomedir --force || true
   elif command -v authconfig >/dev/null 2>&1; then
-    lab_log "finalize_sssd_for_dcv: authconfig mkhomedir"
     authconfig --update --enablemkhomedir || true
   fi
-  lab_log "finalize_sssd_for_dcv: oddjob + sss_cache + sssd restart"
   systemctl enable oddjobd 2>/dev/null || systemctl enable oddjob 2>/dev/null || true
   systemctl restart oddjobd 2>/dev/null || systemctl restart oddjob 2>/dev/null || true
   sss_cache -E 2>/dev/null || true
   systemctl enable sssd || true
   systemctl restart sssd || true
-  lab_log "finalize_sssd_for_dcv: done (sssd oddjob ready for DCV pam_sss)"
 }
 
 # IT: do NOT add 10.x.x.x:/ /efs lines to /etc/fstab (breaks reboot). Remove legacy snippets only.
@@ -186,15 +95,7 @@ sed -i '\|/[[:space:]]*/AL[[:space:]]|d' /etc/fstab 2>/dev/null || true
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
 sed -i '\|${trimspace(lab_efs_nfs_host)}|d' /etc/fstab 2>/dev/null || true
 %{ endif ~}
-lab_log "EFS fstab: removed legacy entries only (no new fstab lines — PD/DV/AL via lab-efs-mount.service)"
 
-# DO NOT call `cloud-init status --wait` here. This script IS executed by
-# cloud-init's modules-final stage, so waiting for cloud-init to reach `done`
-# from inside it causes an infinite self-wait (the deadlock that previously
-# stranded bootstrap before AD join ever started).
-lab_log "cloud-init: skipping self-wait (script runs inside modules-final)"
-
-# SSH
 systemctl enable sshd
 systemctl restart sshd
 
@@ -273,31 +174,14 @@ systemctl daemon-reload || true
 systemctl enable lab-ssh-key-bootstrap.service 2>/dev/null || true
 /usr/local/sbin/lab-ssh-key-bootstrap.sh || true
 %{ else ~}
-lab_log "lab SSH pubkey: skipped in user-data (backend SSM inject); keeps gzip under EC2 16KiB"
+lab_log "lab SSH pubkey: skipped (backend SSM inject)"
 %{ endif ~}
 
-# AD + aws RPMs BEFORE EFS: nfs-utils (mount.nfs4), bind-utils (host/getent), awscli (DescribeMountTargets when VPC DNS fails on EFS hostname).
-# tcsh/csh: required for learner DCV shells (SSSD default_shell often /bin/tcsh on PD/AL/DV labs).
 lab_log "checking pre-installed early packages..."
 MISSING_PKGS=""
-RPM_CRASHED=0
 for pkg in realmd adcli oddjob oddjob-mkhomedir sssd sssd-tools krb5-workstation samba-common-tools openldap-clients nfs-utils bind-utils tcsh csh curl unzip ca-certificates awscli; do
-  # Isolate each rpm -q in a subshell: SIGBUS on a corrupt rpm db must not abort the whole bootstrap.
-  ( rpm -q "$pkg" >/dev/null 2>&1 )
-  rc=$?
-  if [ "$rc" -eq 0 ]; then
-    continue
-  fi
-  if [ "$rc" -ge 128 ]; then
-    lab_log "WARN rpm -q $pkg crashed (exit=$rc); will rebuild rpm db"
-    RPM_CRASHED=1
-  fi
-  MISSING_PKGS="$MISSING_PKGS $pkg"
+  ( rpm -q "$pkg" >/dev/null 2>&1 ) || MISSING_PKGS="$MISSING_PKGS $pkg"
 done
-if [ "$RPM_CRASHED" -eq 1 ]; then
-  lab_log "WARN rpm database probe unstable; running rpm --rebuilddb before dnf/yum install"
-  rpm --rebuilddb 2>&1 || true
-fi
 if [ -n "$MISSING_PKGS" ]; then
   lab_log "installing missing packages:$MISSING_PKGS"
   if command -v dnf >/dev/null 2>&1; then
@@ -306,15 +190,9 @@ if [ -n "$MISSING_PKGS" ]; then
     yum -q -y install $MISSING_PKGS 2>&1 || true
   fi
 else
-  lab_log "all early packages are already installed (dnf/yum fetch skipped)"
-fi
-if command -v tcsh >/dev/null 2>&1; then
-  lab_log "tcsh present: $(tcsh --version 2>&1 | head -1)"
-else
-  lab_log "WARN tcsh not installed — install tcsh package for learner terminals"
+  lab_log "early packages already installed"
 fi
 
-# Standalone post-OS disk expansion script and systemd service
 cat >/usr/local/sbin/lab-disk-expand.sh <<'LABDISKEXPAND'
 #!/bin/bash
 # post‑OS disk expansion – idempotent
@@ -445,7 +323,7 @@ if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/csh.c
     echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
   } >>/etc/csh.cshrc
 fi
-lab_log "installed SSSD/tcsh shell handoff profiles unconditionally"
+lab_log "installed tcsh/efs shell profiles"
 
 # EFS: runtime nfs4 mount only (IT: no vi /etc/fstab line for 10.x:/ /efs). lab-efs-mount.service
 # mounts server:/tools/PD → /PD (etc.) after network-online; lab-efs-tool-env.sh sources pdsource/….
@@ -1013,11 +891,7 @@ if command -v nmcli >/dev/null 2>&1; then
 fi
 %{ endif ~}
 
-lab_log "AD client packages: already installed in early dnf/yum block (reinstall skipped here)"
-
-# CloudLabs NICE DCV + AD guide — lab-docs/_dcv_doc_snippet.txt Section 4.5 (verbatim layout; Terraform fills domain/realm/shell).
 lab_write_sssd_conf_cloudlabs_doc() {
-  lab_log "sssd: Step 4.5 — write /etc/sssd/sssd.conf (joined-with-adcli) per CloudLabs DCV guide"
   cat >/etc/sssd/sssd.conf <<'SSSDCLOUDLABS'
 [sssd]
 domains = ${ad_domain}
@@ -1141,19 +1015,12 @@ fi
 
 %{ if ad_join_mechanism == "realm_userdata" ~}
 LAB_AD_JOIN_OK=0
-lab_log "realm_userdata: preparing join password"
 JOIN_PW=""
 CRED_ERR=/tmp/lab-ad-cred-fetch.err
 rm -f "$${CRED_ERR}" 2>/dev/null || true
 %{ if ad_join_password_b64 != "" ~}
 JOIN_PW=$(printf '%s' '${ad_join_password_b64}' | base64 -d) || true
-if [ -n "$${JOIN_PW}" ]; then
-  lab_log "realm_userdata: using ad_join_password from Terraform (not SSM/Secrets)"
-else
-  lab_log "WARN realm_userdata: ad_join_password decode failed or empty"
-fi
 %{ else ~}
-lab_log "realm_userdata: reading join password from AWS (Secrets Manager or SSM)"
 %{ if ad_join_password_secretsmanager_secret_id != "" ~}
 JOIN_PW=$(lab_aws secretsmanager get-secret-value \
   --region "$${REGION}" \
@@ -1175,16 +1042,12 @@ JOIN_PW=$(lab_aws ssm get-parameter \
 %{ endif ~}
 %{ endif ~}
 if [ -z "$${JOIN_PW}" ] || [ "$${JOIN_PW}" = "None" ]; then
-  if [ -s "$${CRED_ERR}" ]; then
-    lab_log "realm_userdata: AWS CLI stderr (IAM / KMS / region / parameter name) follows:"
-    sed 's/^/[realm_userdata] /' "$${CRED_ERR}" | tail -40 || true
-  else
-    lab_log "realm_userdata: no password (set ad_join_password in tfvars, or fix SSM/Secrets + IAM)"
-  fi
+  [ -s "$${CRED_ERR}" ] && sed 's/^/[ad] /' "$${CRED_ERR}" | tail -20 | tee -a "$LOG" || true
+  lab_log "ERROR: AD join password missing (SSM/Secrets/tfvars)"
 %{ if ad_join_password_secretsmanager_secret_id != "" ~}
-  echo "ERROR: Could not read AD join password from Secrets Manager '${ad_join_password_secretsmanager_secret_id}'. Check IAM (secretsmanager:GetSecretValue) + secret format (plain text or JSON {\"password\":\"...\"})." >&2
+  echo "ERROR: AD join password not readable from Secrets Manager" >&2
 %{ else ~}
-  echo "ERROR: Could not read AD join password from SSM parameter '${ad_join_password_ssm_parameter_name}'. Set ad_join_password in terraform.tfvars, or attach ssm:GetParameter + kms:Decrypt to the instance role. Parameter must exist in $${REGION}." >&2
+  echo "ERROR: AD join password not readable from SSM" >&2
 %{ endif ~}
 else
   JOIN_PW=$(printf '%s' "$${JOIN_PW}" | tr -d '\r')
@@ -1244,12 +1107,12 @@ else
   }
 
   if retry 5 do_adcli_join_cloudlabs_doc; then
-    lab_log "realm_userdata: adcli join OK (CloudLabs DCV guide Step 4.4; lab-docs/_dcv_doc_snippet.txt)"
+    lab_log "adcli join OK"
     LAB_AD_JOIN_OK=1
     lab_write_sssd_conf_cloudlabs_doc
     lab_finalize_sssd_for_dcv
   else
-    lab_log "ERROR realm_userdata: adcli join failed after retries (guide: Steps 4.2–4.4, password, chronyc makestep)" >&2
+    lab_log "ERROR adcli join failed"
     LAB_AD_JOIN_OK=0
   fi
   unset JOIN_PW
@@ -1368,10 +1231,7 @@ fi
 lab_log "AD phase finished"
 %{ endif ~}
 
-lab_log "DCV: /etc dcvserver.service (strip [Service] ExecStartPre) + late drop-in + dcv.conf boot auto-session=false web_all=${dcv_web_listen_all} (tf dcv_use_console_sessions=${dcv_use_console_sessions})"
-# 1) Copy vendor unit to /etc; strip ExecStartPre inside [Service] (el8 drop-ins do not remove main-unit lines).
-# 2) Vendor /usr/lib/.../dcvserver.service.d/*.conf may sort AFTER zzz-lab-… and re-add fatal modprobe — rename our
-#    fragment to zzzzzzzz-… so it sorts last, and quarantine any vendor .conf that sets ExecStartPre+modprobe.
+lab_log "DCV config"
 DCV_VENDOR=""
 for f in /usr/lib/systemd/system/dcvserver.service /lib/systemd/system/dcvserver.service; do
   if [ -f "$${f}" ]; then DCV_VENDOR="$${f}"; break; fi
@@ -1379,10 +1239,7 @@ done
 if [ -n "$${DCV_VENDOR}" ]; then
   tr -d '\r' < "$${DCV_VENDOR}" | awk '/^\[/ { ins = ($$0 == "[Service]" || $$0 ~ /^\\[Service\\][[:space:]]*$$/) ? 1 : 0 } ins && $$0 ~ /^[[:space:]]*ExecStartPre[[:space:]]*=/ { next } { print }' > /etc/systemd/system/dcvserver.service
   if [ ! -s /etc/systemd/system/dcvserver.service ]; then
-    lab_log "ERROR DCV: /etc/systemd/system/dcvserver.service is empty after vendor copy — removing corrupt file (masked/broken unit otherwise)"
     rm -f /etc/systemd/system/dcvserver.service
-  else
-    lab_log "DCV: wrote /etc/systemd/system/dcvserver.service from $${DCV_VENDOR} (ExecStartPre stripped in [Service])"
   fi
 else
   lab_log "WARN DCV: vendor dcvserver.service not found"
@@ -1391,7 +1248,6 @@ if [ -d /usr/lib/systemd/system/dcvserver.service.d ]; then
   for conf in /usr/lib/systemd/system/dcvserver.service.d/*.conf; do
     [ -f "$${conf}" ] || continue
     if grep -qE '^[[:space:]]*ExecStartPre[[:space:]]*=' "$${conf}" 2>/dev/null && grep -qF modprobe "$${conf}" 2>/dev/null; then
-      lab_log "DCV: quarantine vendor drop-in $${conf} (ExecStartPre+modprobe)"
       mv "$${conf}" "$${conf}.lab-quarantine" 2>/dev/null || true
     fi
   done
@@ -1408,11 +1264,7 @@ DCVZZZ
 systemctl daemon-reload
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# DCV must NOT auto-create a session at boot with a bogus owner. "%user%" in AWS/CloudLabs
-# samples is documentation shorthand, not a DCV substitution — it breaks login (owner:%user%).
-# Named virtual sessions are created by the app backend after SSH, e.g.:
-#   sudo dcv create-session 'SumedhaIT_<user>' --owner '<upn>' --user '<posix>' --type virtual
-# See lab-docs/_dcv_doc_snippet.txt Step 3.3 (create-session=false).
+# Virtual sessions created by backend; do not auto-create at boot.
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [server]
 client-eviction-policy = "same-user-oldest-connection"
@@ -1432,7 +1284,7 @@ max-num-heads=1
 enable-client-resize=true
 
 [log]
-log-level=debug
+log-level=info
 
 DCVBASE
 
@@ -1452,30 +1304,14 @@ cat >/etc/dcv/default.perm <<'DCVPERM'
 %any% deny clipboard-copy clipboard-paste
 DCVPERM
 chmod 644 /etc/dcv/default.perm 2>/dev/null || true
-lab_log "DCV: installed /etc/dcv/default.perm (deny client clipboard-copy/paste only; in-session clipboard enabled)"
-# DCV 2025 + Type=dbus: websocket path uses AF_INET6. ipv6.disable=1 in kernel cmdline removes the whole stack
-# (/proc/sys/net/ipv6 never appears; modprobe ipv6 cannot fix until grub is updated and the instance reboots).
 if grep -q 'ipv6.disable=1' /proc/cmdline 2>/dev/null; then
-  lab_log "ERROR_LAB_KERN_IPV6_OFF: /proc/cmdline contains ipv6.disable=1 — DCV will not stay up; relaunching the same AMI does not help."
-  lab_log "FIX (one-time on instance): grubby --update-kernel=ALL --remove-args=ipv6.disable=1 && reboot  (AMI: drop ipv6.disable from /etc/default/grub before bake.)"
+  lab_log "ERROR_LAB_KERN_IPV6_OFF: ipv6.disable=1 in cmdline — fix grub and rebake AMI"
 else
-  if modprobe ipv6 2>/tmp/dcv.ipv6.err; then
-    lab_log "DCV: modprobe ipv6 OK"
-  else
-    lab_log "WARN DCV: modprobe ipv6 failed: $(tr -d '\r\n' </tmp/dcv.ipv6.err 2>/dev/null | head -c 400)"
-  fi
-  rm -f /tmp/dcv.ipv6.err 2>/dev/null || true
+  modprobe ipv6 2>/dev/null || true
   if [ -d /proc/sys/net/ipv6 ]; then
-    if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0)" = "1" ]; then
-      lab_log "DCV: re-enable IPv6 sysctl (all+default)"
-      sysctl -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null || true
-      sysctl -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null || true
-    fi
-    if [ -f /proc/sys/net/ipv6/conf/lo/disable_ipv6 ]; then
-      sysctl -w net.ipv6.conf.lo.disable_ipv6=0 2>/dev/null || true
-    fi
-  else
-    lab_log "WARN DCV: /proc/sys/net/ipv6 missing (no ipv6.disable=1 in cmdline) — check CONFIG_IPV6 / ipv6.ko on AMI"
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null || true
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null || true
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=0 2>/dev/null || true
   fi
 fi
 
@@ -1483,49 +1319,11 @@ systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# Custom translation patch for NICE DCV duplicate session eviction warning
-lab_log "Customizing DCV connection closed message and tab close warning..."
-if [ -d /usr/share/dcv/www ]; then
-  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed\.|You already have an active session/connection running in the browser\.|g' {} + || true
-  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed|You already have an active session/connection running in the browser|g' {} + || true
-  
-  cat << 'EOF' > /usr/share/dcv/www/custom-popup.js
-if (!window.__beforeunload_registered) {
-  window.__beforeunload_registered = true;
-  var show = true;
-  try {
-    var count = parseInt(localStorage.getItem("lab_warn_count") || "0", 10);
-    if (count >= 3) {
-      show = false;
-    } else {
-      localStorage.setItem("lab_warn_count", count + 1);
-    }
-  } catch (e) {}
-  if (show) {
-    alert("Important: Closing this browser tab does NOT stop your lab session. It will continue running in the background. To end your session and stop billing/usage, please click \"Stop Lab\" on the main portal.");
-  }
-}
-EOF
-  chmod 644 /usr/share/dcv/www/custom-popup.js || true
-
-  if [ -f /usr/share/dcv/www/index.html ]; then
-    sed -i 's|</head>|<script src="custom-popup.js"></script></head>|g' /usr/share/dcv/www/index.html || true
-  fi
-  lab_log "DCV connection closed message and tab close warning customized successfully."
-else
-  lab_log "WARN: /usr/share/dcv/www not found, skipping DCV message customization."
-fi
-
 systemctl restart dcvserver || true
-lab_log "DCV service restarted post-config (/etc unit + vendor quarantine + zzzzzzzz drop-in + dcv.conf)"
-
-sleep 2
-# Virtual labs use app-created named sessions; clear legacy console if anything left it open.
 sudo dcv close-session console 2>/dev/null || true
 
 systemctl enable sssd || true
 systemctl restart sssd || true
-lab_log "final sssd restart before bootstrap status tag"
 
 LAB_BOOTSTRAP_TAG=FAILED
 %{ if enable_ad_join ~}
@@ -1552,14 +1350,9 @@ lab_aws ec2 create-tags \
   lab_log "WARN ec2 create-tags LabBootstrap=$${LAB_BOOTSTRAP_TAG} failed (broken awscli?)"
 
 if [ "$${LAB_BOOTSTRAP_TAG}" = "READY" ]; then
-  lab_log "BOOTSTRAP COMPLETE — verify AD: getent passwd <user>; sssctl domain-status; DCV: ss -tlnp | grep 8443; log=$LOG"
-  echo "========== BOOTSTRAP COMPLETE =========="
-%{ if enable_ad_join ~}
-  lab_install_efs_tool_profile_from_tf || true
-%{ endif ~}
+  lab_log "BOOTSTRAP COMPLETE log=$LOG"
 else
-  lab_log "BOOTSTRAP FAILED — AD join required for learner DCV; log=$LOG"
-  echo "========== BOOTSTRAP FAILED (AD) =========="
+  lab_log "BOOTSTRAP FAILED log=$LOG"
 fi
 %{ if lab_monitoring_enabled ~}
 lab_publish_bootstrap_monitoring "$${LAB_BOOTSTRAP_TAG}" || true
