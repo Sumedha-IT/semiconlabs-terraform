@@ -1609,7 +1609,7 @@ systemctl reset-failed dcvserver 2>/dev/null || true
 # See lab-docs/_dcv_doc_snippet.txt Step 3.3 (create-session=false).
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [server]
-client-eviction-policy = "same-user-oldest-connection"
+client-eviction-policy = "reject-new-connection"
 
 [security]
 authentication="system"
@@ -1677,12 +1677,12 @@ systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# Custom translation patch for NICE DCV duplicate session eviction warning
-lab_log "Customizing DCV connection closed message and tab close warning..."
+# DCV UX: customize 2nd-browser (max-clients) message only; Stop Lab tab reminder.
+lab_log "Customizing DCV max-clients message and tab close warning..."
 if [ -d /usr/share/dcv/www ]; then
-  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed\.|You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.|g' {} + || true
-  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|The connection has been closed|You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here|g' {} + || true
-  
+  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|Maximum number of clients reached\.|You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.|g' {} + || true
+  find /usr/share/dcv/www -type f \( -name "*.js" -o -name "*.html" -o -name "*.json" \) -exec sed -i 's|Maximum number of clients reached|You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here|g' {} + || true
+
   cat << 'EOF' > /usr/share/dcv/www/custom-popup.js
 if(!window.__lab_stop_hint_shown){window.__lab_stop_hint_shown=1;try{var n=parseInt(localStorage.getItem("lab_warn_count")||"0",10);if(n<3){localStorage.setItem("lab_warn_count",String(n+1));alert("Important: Closing this browser tab does NOT stop your lab session. It keeps running in the background. When you are done, click Stop Lab on the main portal.");}}catch(e){}}
 EOF
@@ -1691,7 +1691,7 @@ EOF
   if [ -f /usr/share/dcv/www/index.html ]; then
     sed -i 's|</head>|<script src="custom-popup.js"></script></head>|g' /usr/share/dcv/www/index.html || true
   fi
-  lab_log "DCV connection closed message and tab close warning customized successfully."
+  lab_log "DCV max-clients message and tab close warning customized successfully."
 else
   lab_log "WARN: /usr/share/dcv/www not found, skipping DCV message customization."
 fi

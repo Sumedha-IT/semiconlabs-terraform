@@ -1,26 +1,33 @@
 #!/bin/bash
-# Idempotent: patch NICE DCV web client for lab UX on already-running instances.
-# - Replaces "The connection has been closed" with a duplicate-session hint.
-# - Injects custom-popup.js (Stop Lab reminder on first opens).
+# Idempotent DCV www UX patch (v2):
+# - Reject 2nd browser login (reject-new-connection + max-concurrent-clients 1 on sessions).
+# - Customize ONLY "Maximum number of clients reached" (2nd login), NOT generic disconnect.
+# - Stop Lab tab-close reminder via custom-popup.js
 #
-# Manual use (SSM agent Online, LabSSMRole on instance):
-#   aws ssm send-command \
-#     --instance-ids i-xxxxxxxx \
-#     --document-name AWS-RunShellScript \
-#     --parameters commands="$(sed 's/$/\\n/' patch-dcv-www-ux.sh | tr -d '\n')" \
-#     --comment "one-time DCV www UX patch"
-#
-# Or upload this file to the instance and run: sudo bash patch-dcv-www-ux.sh
+# Reverts mistaken v1 sed that replaced "The connection has been closed" everywhere.
 set -u
 
-MARKER=/etc/lab/dcv-www-ux-v1.done
+MARKER=/etc/lab/dcv-www-ux-v2.done
 LOG_TAG="[dcv-ux-patch]"
+V1_WRONG_MSG='You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.'
+V1_WRONG_MSG_OLD='You already have an active session/connection running in the browser'
+DUP_MSG='You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.'
 
 log() { echo "$LOG_TAG $*"; }
 
 if [ -f "$MARKER" ]; then
-  log "already applied ($(cat "$MARKER" 2>/dev/null || echo ok))"
+  log "already applied v2 ($(cat "$MARKER" 2>/dev/null || echo ok))"
   exit 0
+fi
+
+if [ -f /etc/dcv/dcv.conf ]; then
+  if grep -q 'same-user-oldest-connection' /etc/dcv/dcv.conf 2>/dev/null; then
+    sed -i 's|client-eviction-policy = "same-user-oldest-connection"|client-eviction-policy = "reject-new-connection"|g' /etc/dcv/dcv.conf
+    log "updated client-eviction-policy to reject-new-connection"
+  elif ! grep -q 'client-eviction-policy' /etc/dcv/dcv.conf 2>/dev/null; then
+    sed -i '/^\[server\]/a client-eviction-policy = "reject-new-connection"' /etc/dcv/dcv.conf 2>/dev/null || true
+    log "inserted client-eviction-policy reject-new-connection"
+  fi
 fi
 
 if [ ! -d /usr/share/dcv/www ]; then
@@ -28,12 +35,19 @@ if [ ! -d /usr/share/dcv/www ]; then
   exit 1
 fi
 
-DCV_DUP_MSG='You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.'
+find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+  -exec sed -i "s|${V1_WRONG_MSG}\.|The connection has been closed.|g" {} + 2>/dev/null || true
+find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+  -exec sed -i "s|${V1_WRONG_MSG}|The connection has been closed|g" {} + 2>/dev/null || true
+find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+  -exec sed -i "s|${V1_WRONG_MSG_OLD}\.|The connection has been closed.|g" {} + 2>/dev/null || true
+find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+  -exec sed -i "s|${V1_WRONG_MSG_OLD}|The connection has been closed|g" {} + 2>/dev/null || true
 
 find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
-  -exec sed -i "s|The connection has been closed\.|${DCV_DUP_MSG}|g" {} + 2>/dev/null || true
+  -exec sed -i "s|Maximum number of clients reached\.|${DUP_MSG}|g" {} + 2>/dev/null || true
 find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
-  -exec sed -i "s|The connection has been closed|${DCV_DUP_MSG}|g" {} + 2>/dev/null || true
+  -exec sed -i "s|Maximum number of clients reached|${DUP_MSG}|g" {} + 2>/dev/null || true
 
 cat >/usr/share/dcv/www/custom-popup.js <<'DCVPOP'
 if(!window.__lab_stop_hint_shown){window.__lab_stop_hint_shown=1;try{var n=parseInt(localStorage.getItem("lab_warn_count")||"0",10);if(n<3){localStorage.setItem("lab_warn_count",String(n+1));alert("Important: Closing this browser tab does NOT stop your lab session. It keeps running in the background. When you are done, click Stop Lab on the main portal.");}}catch(e){}}
@@ -47,6 +61,7 @@ fi
 systemctl restart dcvserver 2>/dev/null || true
 
 install -d /etc/lab
+rm -f /etc/lab/dcv-www-ux-v1.done 2>/dev/null || true
 date -u +%Y-%m-%dT%H:%M:%SZ >"$MARKER"
-log "done marker=$MARKER"
+log "done v2 marker=$MARKER"
 exit 0

@@ -1267,7 +1267,7 @@ systemctl reset-failed dcvserver 2>/dev/null || true
 # Virtual sessions created by backend; do not auto-create at boot.
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [server]
-client-eviction-policy = "same-user-oldest-connection"
+client-eviction-policy = "reject-new-connection"
 
 [security]
 authentication="system"
@@ -1319,13 +1319,13 @@ systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# DCV UX: friendlier duplicate-session message + Stop Lab reminder on first opens.
+# DCV UX: 2nd-browser message only (max-clients); keep "connection closed" for stop/disconnect.
 if [ -d /usr/share/dcv/www ]; then
   _dcv_dup_msg='You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.'
   find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
-    -exec sed -i "s|The connection has been closed\.|$_dcv_dup_msg|g" {} + 2>/dev/null || true
+    -exec sed -i "s|Maximum number of clients reached\.|$_dcv_dup_msg|g" {} + 2>/dev/null || true
   find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
-    -exec sed -i "s|The connection has been closed|$_dcv_dup_msg|g" {} + 2>/dev/null || true
+    -exec sed -i "s|Maximum number of clients reached|$_dcv_dup_msg|g" {} + 2>/dev/null || true
   cat >/usr/share/dcv/www/custom-popup.js <<'DCVPOP'
 if(!window.__lab_stop_hint_shown){window.__lab_stop_hint_shown=1;try{var n=parseInt(localStorage.getItem("lab_warn_count")||"0",10);if(n<3){localStorage.setItem("lab_warn_count",String(n+1));alert("Important: Closing this browser tab does NOT stop your lab session. It keeps running in the background. When you are done, click Stop Lab on the main portal.");}}catch(e){}}
 DCVPOP
