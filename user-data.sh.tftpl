@@ -1271,7 +1271,7 @@ systemctl reset-failed dcvserver 2>/dev/null || true
 # Virtual sessions created by backend; do not auto-create at boot.
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [server]
-client-eviction-policy = "reject-new-connection"
+client-eviction-policy = "same-user-oldest-connection"
 
 [security]
 authentication="system"

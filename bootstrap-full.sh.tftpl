@@ -1614,7 +1614,7 @@ systemctl reset-failed dcvserver 2>/dev/null || true
 # See lab-docs/_dcv_doc_snippet.txt Step 3.3 (create-session=false).
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [server]
-client-eviction-policy = "reject-new-connection"
+client-eviction-policy = "same-user-oldest-connection"
 
 [security]
 authentication="system"
