@@ -1323,19 +1323,34 @@ systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# DCV www UX v3: evict-oldest on duplicate login (no v2 duplicate-session message override).
+# DCV www UX v5: same-user-oldest (prod-style paste-URL takeover) + stale-tab reconnect guard.
+DUP_MSG='You already have an active lab session in another browser tab or window. Please log out from that session first, then try again here.'
 if [ -d /usr/share/dcv/www ]; then
+  find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+    -exec sed -i "s|Maximum number of clients reached\.|$${DUP_MSG}|g" {} + 2>/dev/null || true
+  find /usr/share/dcv/www -type f \( -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+    -exec sed -i "s|Maximum number of clients reached|$${DUP_MSG}|g" {} + 2>/dev/null || true
   cat >/usr/share/dcv/www/custom-popup.js <<'DCVPOP'
 if(!window.__lab_stop_hint_shown){window.__lab_stop_hint_shown=1;try{var n=parseInt(localStorage.getItem("lab_warn_count")||"0",10);if(n<3){localStorage.setItem("lab_warn_count",String(n+1));alert("Important: Closing this browser tab does NOT stop your lab session. It keeps running in the background. When you are done, click Stop Lab on the main portal.");}}catch(e){}}
 DCVPOP
   chmod 644 /usr/share/dcv/www/custom-popup.js || true
-  if [ -f /usr/share/dcv/www/index.html ] && ! grep -q custom-popup.js /usr/share/dcv/www/index.html 2>/dev/null; then
-    sed -i 's|</head>|<script src="custom-popup.js"></script></head>|' /usr/share/dcv/www/index.html 2>/dev/null || true
+  cat >/usr/share/dcv/www/lab-stale-tab-guard.js <<'LABGUARD'
+(function(){var blocked=false,hadOpen=false;var O=window.WebSocket;function W(u,p){if(blocked){throw new Error("lab stale tab");}var s=new O(u,p);s.addEventListener("open",function(){hadOpen=true;});s.addEventListener("close",function(){if(hadOpen){blocked=true;}});return s;}W.prototype=O.prototype;W.CONNECTING=O.CONNECTING;W.OPEN=O.OPEN;W.CLOSING=O.CLOSING;W.CLOSED=O.CLOSED;window.WebSocket=W;})();
+LABGUARD
+  chmod 644 /usr/share/dcv/www/lab-stale-tab-guard.js || true
+  if [ -f /usr/share/dcv/www/index.html ]; then
+    if ! grep -q custom-popup.js /usr/share/dcv/www/index.html 2>/dev/null; then
+      sed -i 's|</head>|<script src="custom-popup.js"></script></head>|' /usr/share/dcv/www/index.html 2>/dev/null || true
+    fi
+    if ! grep -q lab-stale-tab-guard.js /usr/share/dcv/www/index.html 2>/dev/null; then
+      sed -i 's|</head>|<script src="lab-stale-tab-guard.js"></script></head>|' /usr/share/dcv/www/index.html 2>/dev/null || true
+    fi
   fi
+  lab_log "DCV www UX v5 applied (same-user-oldest + stale-tab guard)"
 fi
 install -d /etc/lab
-rm -f /etc/lab/dcv-www-ux-v1.done /etc/lab/dcv-www-ux-v2.done 2>/dev/null || true
-date -u +%Y-%m-%dT%H:%M:%SZ >/etc/lab/dcv-www-ux-v3.done
+rm -f /etc/lab/dcv-www-ux-v1.done /etc/lab/dcv-www-ux-v2.done /etc/lab/dcv-www-ux-v3.done /etc/lab/dcv-www-ux-v4.done 2>/dev/null || true
+date -u +%Y-%m-%dT%H:%M:%SZ >/etc/lab/dcv-www-ux-v5.done
 
 systemctl restart dcvserver || true
 sudo dcv close-session console 2>/dev/null || true
