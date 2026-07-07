@@ -897,8 +897,11 @@ lab_efs_verify_required_mounts() {
     if [ -f /tools/yam4tp ]; then
       lab_efs_log "VERIFY OK: /tools/yam4tp present"
     else
-      lab_efs_log "VERIFY WARN: /tools/yam4tp missing"
-      fail=1
+      # /tools mounted fine - a missing yam4tp means the EFS tools/ share is under-seeded,
+      # NOT a mount/network failure. Do not fail the pass here: fail=1 forces 6 pointless
+      # retries and ends in the misleading "check network, SG 2049, mount target" error even
+      # though every mount succeeded. Surface it loudly instead so the content gap gets reseeded.
+      lab_efs_log "VERIFY WARN: /tools/yam4tp missing - /tools mounted OK but tools share under-seeded; reseed /tools/yam4tp (not failing mount pass)"
     fi
   else
     lab_efs_log "VERIFY FAIL: /tools not mounted (pdsource needs yam4tp)"

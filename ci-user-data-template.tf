@@ -21,6 +21,7 @@ locals {
     ad_ssm_association_delay                  = var.ad_ssm_association_delay
     ad_sssd_default_shell                     = var.ad_sssd_default_shell
     ad_fallback_adcli_after_ssm               = var.ad_fallback_adcli_after_ssm
+    lab_lustre_userdata_inc                   = local.lab_lustre_userdata_inc
     lab_efs_nfs_host                          = var.lab_efs_nfs_host
     lab_efs_tools_mount_codes                 = var.lab_efs_tools_mount_codes
     lab_efs_aws_ip_fallback                   = var.lab_efs_aws_ip_fallback
@@ -31,7 +32,7 @@ locals {
     lab_environment                           = var.lab_environment
     lab_bootstrap_log_group                   = var.lab_bootstrap_log_group
     lab_monitoring_enabled                    = var.lab_monitoring_enabled
-    lab_bootstrap_monitoring_script           = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {
+    lab_bootstrap_monitoring_script = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {
       aws_region                = var.aws_region
       lab_bootstrap_log_group   = var.lab_bootstrap_log_group
       lab_environment           = var.lab_environment

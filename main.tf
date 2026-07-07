@@ -15,6 +15,15 @@ locals {
   # Production-only repo — fixed prod name prefix (staging uses staging-labs-tf).
   lab_instance_display_name = "SemiconLab-Prod-Instance-${var.suffix}"
 
+  # FSx Lustre shared-storage bootstrap block, spliced into user-data when lab_fsx_lustre_dns is set.
+  # Empty string => user-data keeps the legacy EFS mount path (lab_efs_nfs_host).
+  lab_lustre_userdata_inc = trimspace(var.lab_fsx_lustre_dns) != "" ? templatefile("${path.module}/lab-lustre-userdata.inc.tftpl", {
+    lab_fsx_lustre_dns        = var.lab_fsx_lustre_dns
+    lab_fsx_lustre_mount_name = var.lab_fsx_lustre_mount_name
+    lab_efs_tools_mount_codes = var.lab_efs_tools_mount_codes
+    lab_efs_open_tool_execute = var.lab_efs_open_tool_execute
+  }) : ""
+
   lab_user_data_template_vars = {
     aws_region                                = var.aws_region
     suffix                                    = var.suffix
@@ -36,6 +45,7 @@ locals {
     ad_ssm_association_delay                  = var.ad_ssm_association_delay
     ad_sssd_default_shell                     = var.ad_sssd_default_shell
     ad_fallback_adcli_after_ssm               = var.ad_fallback_adcli_after_ssm
+    lab_lustre_userdata_inc                   = local.lab_lustre_userdata_inc
     lab_efs_nfs_host                          = var.lab_efs_nfs_host
     lab_efs_tools_mount_codes                 = var.lab_efs_tools_mount_codes
     lab_efs_aws_ip_fallback                   = var.lab_efs_aws_ip_fallback
@@ -43,15 +53,15 @@ locals {
     lab_efs_tool_profile_b64                  = var.lab_efs_tool_profile_b64
     lab_efs_open_tool_execute                 = var.lab_efs_open_tool_execute
     # SSH public key is injected via SSM after boot — never embed in user-data (size).
-    lab_ssh_public_key_b64                    = ""
+    lab_ssh_public_key_b64 = ""
   }
 
   # TEMP (prod): monolithic user-data — keep under 16 KiB gzip. Do not embed large per-lab blobs here.
   lab_user_data_rendered = templatefile("${path.module}/user-data.sh.tftpl", merge(local.lab_user_data_template_vars, {
-    lab_efs_tool_profile_b64        = ""
-    lab_environment                 = var.lab_environment
-    lab_bootstrap_log_group         = var.lab_bootstrap_log_group
-    lab_monitoring_enabled          = var.lab_monitoring_enabled
+    lab_efs_tool_profile_b64 = ""
+    lab_environment          = var.lab_environment
+    lab_bootstrap_log_group  = var.lab_bootstrap_log_group
+    lab_monitoring_enabled   = var.lab_monitoring_enabled
     lab_bootstrap_monitoring_script = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {
       aws_region                = var.aws_region
       lab_bootstrap_log_group   = var.lab_bootstrap_log_group
@@ -142,11 +152,11 @@ resource "aws_instance" "CentOS8-AMD" {
   # EC2 user_data gzip payload must be <= 16384 bytes (see user-data-size.tf).
   user_data_base64 = data.cloudinit_config.lab.rendered
   tags = {
-    Name            = local.lab_instance_display_name
-    Environment     = var.env_tag
-    LabEnvironment  = var.lab_environment
-    map-migrated    = "DADS45OSDL"
-    LabBootstrap    = "PENDING"
+    Name           = local.lab_instance_display_name
+    Environment    = var.env_tag
+    LabEnvironment = var.lab_environment
+    map-migrated   = "DADS45OSDL"
+    LabBootstrap   = "PENDING"
   }
 }
 

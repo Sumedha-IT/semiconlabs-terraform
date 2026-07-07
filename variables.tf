@@ -188,7 +188,7 @@ variable "enable_ad_join" {
         var.ad_join_user != "" &&
         (trimspace(var.ad_join_password) != "" ||
           var.ad_join_password_secretsmanager_secret_id != "" ||
-          var.ad_join_password_ssm_parameter_name != "")) ||
+      var.ad_join_password_ssm_parameter_name != "")) ||
       (var.ad_join_mechanism == "ssm_aws_managed" &&
         var.ad_directory_id != "" &&
         var.ad_domain != "" &&
@@ -198,8 +198,8 @@ variable "enable_ad_join" {
           (var.ad_join_user != "" &&
             (trimspace(var.ad_join_password) != "" ||
               var.ad_join_password_secretsmanager_secret_id != "" ||
-              var.ad_join_password_ssm_parameter_name != ""))
-        ))
+          var.ad_join_password_ssm_parameter_name != ""))
+      ))
     )
     error_message = "When enable_ad_join=true: realm_userdata needs ad_join_user + password (ad_join_password in tfvars, or Secrets Manager id, or SSM parameter name). ssm_aws_managed needs ad_directory_id + ad_domain + ad_dns_ips; if ad_fallback_adcli_after_ssm=true also set ad_join_user + a password source."
   }
@@ -325,7 +325,27 @@ variable "ad_sssd_default_shell" {
 variable "lab_efs_nfs_host" {
   type        = string
   default     = "fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com"
-  description = "EFS filesystem DNS name for lab mounts (same region as instance). Empty string skips all EFS logic in user-data."
+  description = "EFS filesystem DNS name for lab mounts (same region as instance). Empty string skips all EFS logic in user-data. Ignored when lab_fsx_lustre_dns is set (Lustre takes precedence; EFS is the rollback path)."
+}
+
+# FSx for Lustre (shared PROD tool storage) — the prod default. user-data mounts Lustre at /efs
+# (not EFS/NFS) and binds /PD|/DV|/AL + /tools the same way. Prod slabs FSx = fs-09f8ba285ecf05b0e,
+# mount name t4zh7bev. Value is the FSx MGS *IP* (not DNS): this is the exact NID validated on staging
+# and it works both same-VPC and cross-VPC (the private DNS name fails to resolve over peering ->
+# "mount.lustre: Can't parse NID"). Re-check if the FSx is ever recreated:
+#   aws fsx describe-file-systems --file-system-ids fs-09f8ba285ecf05b0e --query 'FileSystems[0].NetworkInterfaceIds'
+# The lab-worker can override per apply via terraform.tfvars (LAB_FSX_LUSTRE_DNS env). Set to "" only
+# to deliberately roll back to the legacy EFS path (lab_efs_nfs_host).
+variable "lab_fsx_lustre_dns" {
+  type        = string
+  default     = "10.50.10.147"
+  description = "FSx Lustre MGS NID IP (<ip>@tcp:/<mount>) — staging-tested prod FSx. Empty skips Lustre and falls back to lab_efs_nfs_host."
+}
+
+variable "lab_fsx_lustre_mount_name" {
+  type        = string
+  default     = "t4zh7bev"
+  description = "FSx Lustre mount name from console (prod slabs fsx). Used as @tcp:/<name>."
 }
 
 # After root mount on /efs, user-data mkdirs /efs/tools/<code> on the same filesystem (PD / DV / AL). Not separate NFS mounts.
