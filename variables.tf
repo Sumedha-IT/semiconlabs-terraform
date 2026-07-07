@@ -13,9 +13,9 @@ variable "instance_name" {
 }
 
 variable "ami_id" {
-  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM pre-baked; AD join + SSSD finalize in user-data / SSM)"
+  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM+Lustre client pre-baked; AD join + SSSD finalize in user-data / SSM). Must ship lustre-client + kernel versionlock or FSx mounts fail with 'lustre kernel module not loaded'."
   type        = string
-  default     = "ami-0248f6f933f83696c"
+  default     = "ami-029ab927ae6f71d21"
 }
 
 variable "name" {
