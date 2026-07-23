@@ -105,6 +105,7 @@ sed -i '\|/[[:space:]]*/DV[[:space:]]|d' /etc/fstab 2>/dev/null || true
 sed -i '\|/[[:space:]]*/AL[[:space:]]|d' /etc/fstab 2>/dev/null || true
 %{ if trimspace(lab_lustre_userdata_inc) != "" ~}
 sed -i '\|fsx\.ap-south-1\.amazonaws\.com|d' /etc/fstab 2>/dev/null || true
+sed -i '/[[:space:]]\/data[[:space:]]/d' /etc/fstab 2>/dev/null || true
 %{ else ~}
 %{ if trimspace(lab_efs_nfs_host) != "" ~}
 sed -i '\|${trimspace(lab_efs_nfs_host)}|d' /etc/fstab 2>/dev/null || true
@@ -269,7 +270,22 @@ chmod 644 /etc/profile.d/zz-lab-efs-tools.sh 2>/dev/null || true
 
 cat >/etc/profile.d/zz-lab-efs-tools.csh <<'ZZLABEFSCSH'
 # Lab domain vendor env for tcsh/csh (DCV learner shells; Cadence/Synopsys pdsource etc.).
+# LOCAL guard so each new login shell re-sources vendor env.
+if (! $?_LAB_EFS_TOOLS_LOADED ) then
+set _LAB_EFS_TOOLS_LOADED
 set _orig_dir = "$cwd"
+set _lab_tool_cwd = ""
+# Vendor pdsource expands $MODUSHOME without $?MODUSHOME — seed before source.
+if ( ! $?MODUSHOME ) then
+  set _lab_modus = `sh -c 'for d in /PD/cdn /PD/mgs /PD/cdn/* /efs/tools/PD/cdn /efs/tools/PD/mgs; do [ -d "$d" ] || continue; find "$d" -maxdepth 3 -type d \( -iname "MODUS*" -o -iname "Modus*" \) 2>/dev/null | head -1; done | head -1'`
+  if ( "$_lab_modus" != "" ) then
+    setenv MODUSHOME "$_lab_modus"
+  else
+    setenv MODUSHOME ""
+  endif
+endif
+if ( ! $?CDS_INST_DIR ) setenv CDS_INST_DIR ""
+if ( ! $?CDS_ROOT ) setenv CDS_ROOT ""
 if ( -r /etc/lab/efs-tool-sources.lst ) then
 foreach f (`grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[[:space:]]*$'`)
   if ( -f "$f" ) then
@@ -282,24 +298,29 @@ foreach f (`grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[
     case /efs/tools/PD/snps/pdsource:
     case /efs/tools/PD/cdn/pdsource:
       cd /PD
+      set _lab_tool_cwd = /PD
       breaksw
     case /AL/alsource:
     case /efs/tools/AL/alsource:
     case /AL/cdn/alsource:
     case /efs/tools/AL/cdn/alsource:
       cd /AL
+      set _lab_tool_cwd = /AL
       breaksw
     case /DV/dvsource:
     case /efs/tools/DV/dvsource:
     case /DV/snps/dvsource:
     case /DV/cdn/dvsource:
       cd /DV
+      set _lab_tool_cwd = /DV
       breaksw
     endsw
     source "$f"
   endif
 end
-# pdsource sets ICC2_HOME under /efs/tools/PD/... - prefer /PD/... bind mount (do not use $?ICC2_HOME: tcsh treats $? as exit status).
+endif
+# Prefer /PD bind over /efs/tools/... paths from vendor scripts.
+if ( $?ICC2_HOME ) then
 if ( "$ICC2_HOME" != "" ) then
   set _iccfix = `echo "$ICC2_HOME" | sed \
     -e 's|^/efs/tools/PD|/PD|' \
@@ -313,7 +334,15 @@ if ( "$ICC2_HOME" != "" ) then
   endif
 endif
 endif
-cd "$_orig_dir"
+if ( $?prompt ) then
+  set prompt = '%{\033[32m%}%n@%m(%n):[...%~]$%{\033[0m%} '
+endif
+if ( "$_lab_tool_cwd" != "" ) then
+  cd "$_lab_tool_cwd"
+else
+  cd "$_orig_dir"
+endif
+endif
 ZZLABEFSCSH
 chmod 644 /etc/profile.d/zz-lab-efs-tools.csh 2>/dev/null || true
 
@@ -473,7 +502,7 @@ lab_efs_bind_tools_via_root() {
     fi
   done
 }
-# One-shot layout: /PD|/DV|/AL + /tools (yam4tp file) + /efs (cad2k) + /efs/tools/<code> -> /<code>.
+# One-shot layout: /PD|/DV|/AL + /tools + /efs (cad2k) + /efs/tools/<code> -> /<code>.
 lab_efs_nfs_opts() {
   echo "nfsvers=4.1,_netdev,timeo=30,retrans=3,noresvport"
 }
@@ -515,13 +544,8 @@ lab_efs_mount_tools_prefix() {
   lab_efs_prepare_mount_point /tools || return 1
   opts=$(lab_efs_nfs_opts)
   if timeout 90 mount -t nfs4 -o "$opts" "$${server}:/tools" /tools 2>&1 | tee -a "$LOG"; then
-    lab_efs_log "mounted $${server}:/tools -> /tools (yam4tp file + vendor scripts)"
+    lab_efs_log "mounted $${server}:/tools -> /tools (shared tools / vendor scripts)"
     chmod 755 /tools 2>/dev/null || true
-    if [ -f /tools/yam4tp ]; then
-      lab_efs_log "yam4tp present at /tools/yam4tp"
-    else
-      lab_efs_log "WARN /tools/yam4tp missing after :/tools mount"
-    fi
     return 0
   fi
   lab_efs_log "WARN mount $${server}:/tools -> /tools failed"
@@ -592,19 +616,36 @@ lab_efs_verify_required_mounts() {
   done
   if mountpoint -q /tools 2>/dev/null; then
     lab_efs_log "VERIFY OK: /tools mounted"
-    if [ -f /tools/yam4tp ]; then
-      lab_efs_log "VERIFY OK: /tools/yam4tp present"
-    else
-      # /tools mounted fine - a missing yam4tp means the EFS tools/ share is under-seeded,
-      # NOT a mount/network failure. Do not fail the pass here: fail=1 forces 6 pointless
-      # retries and ends in the misleading "check network, SG 2049, mount target" error even
-      # though every mount succeeded. Surface it loudly instead so the content gap gets reseeded.
-      lab_efs_log "VERIFY WARN: /tools/yam4tp missing - /tools mounted OK but tools share under-seeded; reseed /tools/yam4tp (not failing mount pass)"
-    fi
   else
-    lab_efs_log "VERIFY FAIL: /tools not mounted (pdsource needs yam4tp)"
+    lab_efs_log "VERIFY FAIL: /tools not mounted"
     fail=1
   fi
+  for c in $TOOLS_LIST; do
+    [ -z "$c" ] && continue
+    case "$(echo "$c" | tr '[:lower:]' '[:upper:]')" in
+      PD)
+        if [ -f /PD/pdsource ] || [ -f /efs/tools/PD/pdsource ]; then
+          lab_efs_log "VERIFY OK: PD pdsource present"
+        else
+          lab_efs_log "VERIFY WARN: PD pdsource missing"
+        fi
+        ;;
+      AL)
+        if [ -f /AL/alsource ] || [ -f /efs/tools/AL/alsource ]; then
+          lab_efs_log "VERIFY OK: AL alsource present"
+        else
+          lab_efs_log "VERIFY WARN: AL alsource missing"
+        fi
+        ;;
+      DV)
+        if [ -f /DV/dvsource ] || [ -f /efs/tools/DV/dvsource ]; then
+          lab_efs_log "VERIFY OK: DV dvsource present"
+        else
+          lab_efs_log "VERIFY WARN: DV dvsource missing"
+        fi
+        ;;
+    esac
+  done
   return $fail
 }
 lab_efs_run_mount_pass() {
@@ -1217,14 +1258,14 @@ fi
 lab_finalize_sssd_for_dcv
 %{ endif ~}
 
-# DCV must stack unix + pam_sss (golden AMI should already ship this; restore if missing/corrupt).
-if [ ! -f /etc/pam.d/dcv ] || ! grep -q pam_sss.so /etc/pam.d/dcv 2>/dev/null; then
-  lab_log "writing /etc/pam.d/dcv (pam_unix + pam_sss + mkhomedir)"
-  cat >/etc/pam.d/dcv <<'PAMDCV'
+# DCV PAM: AD/SSSD must authenticate portal UPN. Always rewrite — older AMI stacks put
+# pam_unix before pam_sss without try_first_pass and Rocky/EL9 then reports incorrect password.
+lab_log "writing /etc/pam.d/dcv (pam_sss first, then pam_unix try_first_pass)"
+cat >/etc/pam.d/dcv <<'PAMDCV'
 #%PAM-1.0
 auth required pam_env.so
-auth sufficient pam_unix.so nullok
-auth sufficient pam_sss.so forward_pass
+auth sufficient pam_sss.so
+auth sufficient pam_unix.so nullok try_first_pass
 auth required pam_deny.so
 account sufficient pam_unix.so
 account sufficient pam_sss.so
@@ -1241,8 +1282,7 @@ session [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_
 session required pam_unix.so
 session optional pam_sss.so
 PAMDCV
-  lab_log "/etc/pam.d/dcv installed"
-fi
+lab_log "/etc/pam.d/dcv installed"
 
 lab_log "AD phase finished"
 %{ endif ~}
@@ -1340,6 +1380,17 @@ else
     sysctl -w net.ipv6.conf.lo.disable_ipv6=0 2>/dev/null || true
   fi
 fi
+
+# Rocky AMI: firewalld REJECT on 8443 → dcv-router "Host is unreachable" (113).
+# Open the port if firewalld is up, then disable it (SG is the network ACL).
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+  firewall-cmd --permanent --add-port=8443/tcp 2>/dev/null || true
+  firewall-cmd --permanent --add-port=22/tcp 2>/dev/null || true
+  firewall-cmd --reload 2>/dev/null || true
+  lab_log "DCV: firewalld allowed 8443/tcp"
+fi
+systemctl disable --now firewalld 2>/dev/null || true
+lab_log "DCV: firewalld disabled (if present)"
 
 systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true

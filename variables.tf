@@ -79,6 +79,12 @@ variable "suffix" {
   # default = "Koushal-Manual_"
 }
 
+variable "lab_username" {
+  description = "Portal/DCV owner username (email or UPN). Used in EC2 Name tag: slabs-prod-{suffix}-{username}."
+  type        = string
+  default     = ""
+}
+
 # Kept for backend tfvars compatibility; must stay production in this repository.
 variable "lab_environment" {
   description = "Must be production (staging fleet uses staging-labs-tf)."

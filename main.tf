@@ -12,8 +12,16 @@ locals {
   # to the NIC resolver (nmcli). Put the primary DC DNS first in ad_dns_ips.
   ad_ssm_join_dns_ip = trimspace(var.ad_dns_ips[0])
 
-  # Production-only repo — fixed prod name prefix (staging uses staging-labs-tf).
-  lab_instance_display_name = "SemiconLab-Prod-Instance-${var.suffix}"
+  # Production-only repo — slabs-prod-{suffix}-{username}
+  # Avoid regexreplace() — some lab-worker Terraform builds do not expose it.
+  lab_env_label = "prod"
+  lab_username_raw = lower(element(concat(split("@", trimspace(var.lab_username)), [""]), 0))
+  lab_username_label = replace(replace(replace(replace(replace(replace(replace(
+    local.lab_username_raw,
+    ".", ""), "_", ""), "-", ""), "+", ""), " ", ""), "/", ""), "@", "")
+  lab_instance_display_name = trimspace(var.lab_username) != "" && local.lab_username_label != "" ? (
+    "slabs-${local.lab_env_label}-${var.suffix}-${local.lab_username_label}"
+  ) : "slabs-${local.lab_env_label}-instance-${var.suffix}"
 
   # FSx Lustre shared-storage bootstrap block, spliced into user-data when lab_fsx_lustre_dns is set.
   # Empty string => user-data keeps the legacy EFS mount path (lab_efs_nfs_host).

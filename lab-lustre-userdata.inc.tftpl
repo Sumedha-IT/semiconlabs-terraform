@@ -1,4 +1,5 @@
-# FSx for Lustre: runtime mount at /efs + bind /PD|/DV|/AL and /tools (same paths as EFS layout).
+# FSx for Lustre: runtime mount at /data + bind /PD|/DV|/AL and /tools.
+# /efs is a symlink → /data so vendor scripts (ICC2_HOME=/efs/tools/...) keep working.
 # Golden AMI must ship lustre-client + kernel versionlock (see lustre-implementaioin-guide.md).
 if [ -e /tools ] && [ ! -d /tools ]; then
   lab_log "AMI: /tools is not a directory ($(file -b /tools 2>/dev/null || echo unknown)); moving aside for Lustre bind"
@@ -7,6 +8,7 @@ fi
 mkdir -p /etc/lab
 cat >/etc/lab/efs-mount.env <<'LABLUSTRENV'
 STORAGE_BACKEND=lustre
+LUSTRE_ROOT=/data
 FSX_DNS='${trimspace(lab_fsx_lustre_dns)}'
 FSX_MOUNT_NAME='${trimspace(lab_fsx_lustre_mount_name)}'
 TOOLS_LIST='${join(" ", lab_efs_tools_mount_codes)}'
@@ -15,7 +17,7 @@ chmod 644 /etc/lab/efs-mount.env 2>/dev/null || true
 
 cat >/usr/local/sbin/lab-efs-mount.sh <<'LABLUSTREMOUNT'
 #!/bin/bash
-# Idempotent FSx Lustre root + tool bind mounts (/efs, /PD, /tools). Same service name as EFS era.
+# Idempotent FSx Lustre root + tool bind mounts (/data, /PD, /tools). Same service name as EFS era.
 set -uo pipefail
 LOG=/var/log/lab-bootstrap.log
 lab_log() {
@@ -24,6 +26,8 @@ lab_log() {
 [ -r /etc/lab/efs-mount.env ] || { lab_log "missing /etc/lab/efs-mount.env"; exit 1; }
 # shellcheck source=/dev/null
 . /etc/lab/efs-mount.env
+# Canonical FSx root is always /data. Older userdata mounted at /efs — migrate below.
+LUSTRE_ROOT=/data
 lab_prepare_mount_point() {
   local mp="$1"
   [ -n "$mp" ] || return 1
@@ -38,7 +42,24 @@ lab_prepare_mount_point() {
   mkdir -p "$mp" || return 1
 }
 lab_lustre_mounted() {
-  grep -qE '[[:space:]]/efs[[:space:]]+lustre' /proc/mounts 2>/dev/null
+  grep -qE "[[:space:]]$${LUSTRE_ROOT}[[:space:]]+lustre" /proc/mounts 2>/dev/null
+}
+lab_link_efs_compat() {
+  # Vendor pdsource still uses /efs/tools/... — point /efs at the Lustre root.
+  if [ -L /efs ]; then
+    ln -sfn "$${LUSTRE_ROOT}" /efs 2>/dev/null || true
+    return 0
+  fi
+  if mountpoint -q /efs 2>/dev/null; then
+    lab_log "WARN /efs is a separate mount; leaving as-is (prefer $${LUSTRE_ROOT})"
+    return 0
+  fi
+  if [ -d /efs ]; then
+    rmdir /efs 2>/dev/null || mv /efs /efs.pre-data.bak 2>/dev/null || true
+  fi
+  if [ ! -e /efs ]; then
+    ln -sfn "$${LUSTRE_ROOT}" /efs && lab_log "compat symlink /efs -> $${LUSTRE_ROOT}"
+  fi
 }
 lab_tool_bind_mounted() {
   local c="$1"
@@ -47,10 +68,40 @@ lab_tool_bind_mounted() {
 lab_tools_prefix_mounted() {
   mountpoint -q /tools 2>/dev/null
 }
+# Legacy labs mounted Lustre at /efs. Move root to /data, then /efs becomes a compat symlink.
+lab_migrate_efs_lustre_to_data() {
+  if lab_lustre_mounted; then
+    lab_link_efs_compat
+    return 0
+  fi
+  grep -qE '[[:space:]]/efs[[:space:]]+lustre' /proc/mounts 2>/dev/null || return 0
+  local m
+  for m in /PD /AL /DV /tools; do
+    if mountpoint -q "$m" 2>/dev/null; then
+      umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
+    fi
+  done
+  lab_prepare_mount_point /data || return 1
+  if mount --move /efs /data 2>&1 | tee -a "$LOG"; then
+    lab_log "migrated Lustre mount /efs -> /data"
+  else
+    lab_log "WARN mount --move /efs -> /data failed; will remount fresh at /data"
+    umount /efs 2>/dev/null || umount -l /efs 2>/dev/null || true
+    return 1
+  fi
+  if [ -L /efs ]; then
+    ln -sfn /data /efs 2>/dev/null || true
+  else
+    rmdir /efs 2>/dev/null || mv /efs /efs.pre-data.bak 2>/dev/null || true
+    [ ! -e /efs ] && ln -sfn /data /efs && lab_log "compat symlink /efs -> /data"
+  fi
+  return 0
+}
 lab_mount_lustre_root() {
   local spec ip
-  lab_prepare_mount_point /efs || return 1
-  lab_lustre_mounted && return 0
+  lab_migrate_efs_lustre_to_data || true
+  lab_prepare_mount_point "$${LUSTRE_ROOT}" || return 1
+  lab_lustre_mounted && { lab_link_efs_compat; return 0; }
   if ! command -v timeout >/dev/null 2>&1; then
     lab_log "WARN timeout command missing"
     return 1
@@ -61,17 +112,19 @@ lab_mount_lustre_root() {
     return 1
   fi
   spec="$${FSX_DNS}@tcp:/$${FSX_MOUNT_NAME}"
-  if timeout 90 mount -t lustre -o relatime,flock "$spec" /efs 2>&1 | tee -a "$LOG"; then
-    lab_log "mounted /efs via $spec"
-    chmod 755 /efs 2>/dev/null || true
+  if timeout 90 mount -t lustre -o relatime,flock "$spec" "$${LUSTRE_ROOT}" 2>&1 | tee -a "$LOG"; then
+    lab_log "mounted $${LUSTRE_ROOT} via $spec"
+    chmod 755 "$${LUSTRE_ROOT}" 2>/dev/null || true
+    lab_link_efs_compat
     return 0
   fi
   ip=$(getent ahosts "$${FSX_DNS}" 2>/dev/null | awk 'NR==1{print $1; exit}')
   if [ -n "$ip" ]; then
     spec="$${ip}@tcp:/$${FSX_MOUNT_NAME}"
-    if timeout 90 mount -t lustre -o relatime,flock "$spec" /efs 2>&1 | tee -a "$LOG"; then
-      lab_log "mounted /efs via $spec (DNS fallback IP)"
-      chmod 755 /efs 2>/dev/null || true
+    if timeout 90 mount -t lustre -o relatime,flock "$spec" "$${LUSTRE_ROOT}" 2>&1 | tee -a "$LOG"; then
+      lab_log "mounted $${LUSTRE_ROOT} via $spec (DNS fallback IP)"
+      chmod 755 "$${LUSTRE_ROOT}" 2>/dev/null || true
+      lab_link_efs_compat
       return 0
     fi
   fi
@@ -81,54 +134,75 @@ lab_bind_tools() {
   local c
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
-    mkdir -p "/efs/tools/$c" "/$c" 2>/dev/null || true
+    mkdir -p "$${LUSTRE_ROOT}/tools/$c" "/$c" 2>/dev/null || true
     if lab_tool_bind_mounted "$c"; then
       lab_log "bind /$c already present"
       continue
     fi
-    if mount --bind "/efs/tools/$c" "/$c" 2>&1 | tee -a "$LOG"; then
-      lab_log "bind /efs/tools/$c -> /$c"
+    if mount --bind "$${LUSTRE_ROOT}/tools/$c" "/$c" 2>&1 | tee -a "$LOG"; then
+      lab_log "bind $${LUSTRE_ROOT}/tools/$c -> /$c"
     else
-      lab_log "WARN bind /efs/tools/$c -> /$c failed"
+      lab_log "WARN bind $${LUSTRE_ROOT}/tools/$c -> /$c failed"
     fi
   done
 }
+# IT: PD/AL/DV env needs only pdsource / alsource / dvsource (not /tools/yam4tp).
+# Do not seed or require yam4tp — it was removed from FSx to avoid confusion.
 lab_bind_tools_prefix() {
-  lab_tools_prefix_mounted && return 0
-  lab_prepare_mount_point /tools || return 1
-  mkdir -p /efs/tools 2>/dev/null || true
-  if mount --bind /efs/tools /tools 2>&1 | tee -a "$LOG"; then
-    lab_log "bind /efs/tools -> /tools (yam4tp + vendor scripts)"
-    chmod 755 /tools 2>/dev/null || true
-    if [ -f /tools/yam4tp ]; then
-      lab_log "yam4tp present at /tools/yam4tp"
-    else
-      lab_log "WARN /tools/yam4tp missing after bind"
-    fi
+  if lab_tools_prefix_mounted; then
     return 0
   fi
-  lab_log "WARN bind /efs/tools -> /tools failed"
+  lab_prepare_mount_point /tools || return 1
+  mkdir -p "$${LUSTRE_ROOT}/tools" 2>/dev/null || true
+  if mount --bind "$${LUSTRE_ROOT}/tools" /tools 2>&1 | tee -a "$LOG"; then
+    lab_log "bind $${LUSTRE_ROOT}/tools -> /tools (vendor scripts / shared tools)"
+    chmod 755 /tools 2>/dev/null || true
+    return 0
+  fi
+  lab_log "WARN bind $${LUSTRE_ROOT}/tools -> /tools failed"
   return 1
 }
+# IT removed /tools/yam4tp from FSx; pdsource may still source it — overlay local noop file.
+lab_yam4tp_noop_bind() {
+  local stub=/var/lib/lab/vendor-stubs/yam4tp target
+  install -d -m 755 /var/lib/lab/vendor-stubs
+  cat >"$stub" <<'EOF'
+# semiconlabs-yam4tp-noop
+EOF
+  chmod 644 "$stub"
+  for target in /tools/yam4tp /PD/tools/yam4tp /data/tools/yam4tp /efs/tools/yam4tp; do
+    mountpoint -q "$target" 2>/dev/null && continue
+    [ -e "$target" ] && [ ! -f "$target" ] && continue
+    if [ ! -e "$target" ]; then
+      touch "$target" 2>/dev/null || { lab_log "WARN cannot create $target for yam4tp noop"; continue; }
+    fi
+    if mount --bind "$stub" "$target" 2>/dev/null; then
+      lab_log "yam4tp noop bind -> $target"
+    elif cp -f "$stub" "$target" 2>/dev/null; then
+      lab_log "yam4tp noop wrote -> $target"
+    fi
+  done
+}
 lab_ensure_legacy_efs_paths() {
-  local c
-  lab_prepare_mount_point /efs || return 0
-  mkdir -p /efs/tools 2>/dev/null || true
-  if lab_lustre_mounted && [ -d /efs/tools/PD ] 2>/dev/null; then
+  local c root="$${LUSTRE_ROOT}"
+  lab_link_efs_compat
+  lab_prepare_mount_point "$root" || return 0
+  mkdir -p "$root/tools" 2>/dev/null || true
+  if lab_lustre_mounted && [ -d "$root/tools/PD" ] 2>/dev/null; then
     return 0
   fi
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
-    if [ -d "/$c" ] && [ ! -e "/efs/tools/$c" ]; then
-      ln -sfn "/$c" "/efs/tools/$c" 2>/dev/null && \
-        lab_log "legacy /efs/tools/$c -> /$c (ICC2_HOME / vendor paths)"
+    if [ -d "/$c" ] && [ ! -e "$root/tools/$c" ]; then
+      ln -sfn "/$c" "$root/tools/$c" 2>/dev/null && \
+        lab_log "legacy $root/tools/$c -> /$c (ICC2_HOME / vendor paths)"
     fi
   done
-  chmod 755 /efs /efs/tools 2>/dev/null || true
+  chmod 755 "$root" "$root/tools" 2>/dev/null || true
 }
 lab_open_tool_traverse() {
   local p n=0
-  for p in /PD /AL /DV /tools; do
+  for p in /PD /AL /DV /tools /data; do
     [ -d "$p" ] || continue
     chmod a+rx "$p" 2>/dev/null && n=$((n + 1))
   done
@@ -136,6 +210,12 @@ lab_open_tool_traverse() {
 }
 lab_verify_mounts() {
   local c fail=0
+  if mountpoint -q "$${LUSTRE_ROOT}" 2>/dev/null; then
+    lab_log "VERIFY OK: $${LUSTRE_ROOT} mounted"
+  else
+    lab_log "VERIFY FAIL: $${LUSTRE_ROOT} not mounted"
+    fail=1
+  fi
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
     if mountpoint -q "/$c" 2>/dev/null; then
@@ -147,26 +227,48 @@ lab_verify_mounts() {
   done
   if mountpoint -q /tools 2>/dev/null; then
     lab_log "VERIFY OK: /tools mounted"
-    if [ -f /tools/yam4tp ]; then
-      lab_log "VERIFY OK: /tools/yam4tp present"
-    else
-      lab_log "VERIFY WARN: /tools/yam4tp missing"
-      fail=1
-    fi
   else
-    lab_log "VERIFY FAIL: /tools not mounted (pdsource needs yam4tp)"
+    lab_log "VERIFY FAIL: /tools not mounted"
     fail=1
   fi
+  # Domain env = pdsource / alsource / dvsource only (IT; no yam4tp required).
+  for c in $TOOLS_LIST; do
+    [ -z "$c" ] && continue
+    case "$(echo "$c" | tr '[:lower:]' '[:upper:]')" in
+      PD)
+        if [ -f /PD/pdsource ] || [ -f /data/tools/PD/pdsource ] || [ -f /efs/tools/PD/pdsource ]; then
+          lab_log "VERIFY OK: PD pdsource present"
+        else
+          lab_log "VERIFY WARN: PD pdsource missing under /PD or /data/tools/PD"
+        fi
+        ;;
+      AL)
+        if [ -f /AL/alsource ] || [ -f /data/tools/AL/alsource ] || [ -f /efs/tools/AL/alsource ]; then
+          lab_log "VERIFY OK: AL alsource present"
+        else
+          lab_log "VERIFY WARN: AL alsource missing under /AL or /data/tools/AL"
+        fi
+        ;;
+      DV)
+        if [ -f /DV/dvsource ] || [ -f /data/tools/DV/dvsource ] || [ -f /efs/tools/DV/dvsource ]; then
+          lab_log "VERIFY OK: DV dvsource present"
+        else
+          lab_log "VERIFY WARN: DV dvsource missing under /DV or /data/tools/DV"
+        fi
+        ;;
+    esac
+  done
   return $fail
 }
 lab_run_mount_pass() {
   lab_mount_lustre_root || return 1
   lab_bind_tools
   lab_bind_tools_prefix || true
+  lab_yam4tp_noop_bind || true
   lab_ensure_legacy_efs_paths
   lab_verify_mounts
 }
-lab_log "start FSx Lustre FSX_DNS=$${FSX_DNS} mount=$${FSX_MOUNT_NAME} tools=[$TOOLS_LIST]"
+lab_log "start FSx Lustre FSX_DNS=$${FSX_DNS} mount=$${FSX_MOUNT_NAME} root=$${LUSTRE_ROOT} tools=[$TOOLS_LIST]"
 _max_pass=3
 _pass=0
 while [ "$_pass" -lt "$_max_pass" ]; do
@@ -179,6 +281,7 @@ while [ "$_pass" -lt "$_max_pass" ]; do
       lab_log "findmnt /$c: $(findmnt -n /$c 2>/dev/null || echo N/A)"
     done
     lab_log "findmnt /tools: $(findmnt -n /tools 2>/dev/null || echo N/A)"
+    lab_log "findmnt $${LUSTRE_ROOT}: $(findmnt -n $${LUSTRE_ROOT} 2>/dev/null || echo N/A)"
     lab_log "SUMMARY OK (pass $_pass)"
 %{ if lab_efs_open_tool_execute ~}
     lab_open_tool_traverse || true
@@ -207,25 +310,33 @@ lab_te_source_candidates() {
     PD)
       u=pdsource
       echo "/$code/$u"
+      echo "/data/tools/$code/$u"
       echo "/efs/tools/$code/$u"
       echo "/$code/snps/$u"
       echo "/$code/cdn/$u"
+      echo "/data/tools/$code/snps/$u"
+      echo "/data/tools/$code/cdn/$u"
       echo "/efs/tools/$code/snps/$u"
       echo "/efs/tools/$code/cdn/$u"
       ;;
     AL)
       u=alsource
       echo "/$code/$u"
+      echo "/data/tools/$code/$u"
       echo "/efs/tools/$code/$u"
       echo "/$code/cdn/$u"
+      echo "/data/tools/$code/cdn/$u"
       echo "/efs/tools/$code/cdn/$u"
       ;;
     DV)
       u=dvsource
       echo "/$code/$u"
+      echo "/data/tools/$code/$u"
       echo "/efs/tools/$code/$u"
       echo "/$code/snps/$u"
       echo "/$code/cdn/$u"
+      echo "/data/tools/$code/snps/$u"
+      echo "/data/tools/$code/cdn/$u"
       echo "/efs/tools/$code/snps/$u"
       echo "/efs/tools/$code/cdn/$u"
       ;;
@@ -244,6 +355,18 @@ lab_te_resolve_source() {
   lab_te_source_candidates "$code" | head -n 1
   return 0
 }
+# Source the raw pdsource path directly. The /tools/yam4tp noop bind (lab_yam4tp_noop_bind)
+# neutralises the removed vendor tool, so no filtering is needed.
+lab_te_add_filtered_source() {
+  local path="$1"
+  case "$path" in ''|'#'*) return 0 ;; *yam4tp*) return 0 ;; esac
+  grep -qxF "$path" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$path" >>/etc/lab/efs-tool-sources.lst
+  if [ -f "$path" ]; then
+    lab_te_log "source -> $path (exists)"
+  else
+    lab_te_log "WARN source -> $path (missing on shared storage)"
+  fi
+}
 install -d /etc/lab
 TOOLS_FROM_ENV=""
 [ -r /etc/lab/efs-mount.env ] && . /etc/lab/efs-mount.env
@@ -256,13 +379,7 @@ if [ -r /etc/lab/efs-tool-sources.extra.lst ]; then
   while IFS= read -r f || [ -n "$f" ]; do
     case "$f" in ''|'#'*) continue ;; esac
     LAB_EFS_HAS_EXTRA=1
-    if [ -f "$f" ]; then
-      grep -qxF "$f" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$f" >>/etc/lab/efs-tool-sources.lst
-      lab_te_log "backend source -> $f (exists)"
-    else
-      grep -qxF "$f" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$f" >>/etc/lab/efs-tool-sources.lst
-      lab_te_log "WARN backend source -> $f (missing on shared storage)"
-    fi
+    lab_te_add_filtered_source "$f"
   done </etc/lab/efs-tool-sources.extra.lst
 fi
 if [ "$LAB_EFS_HAS_EXTRA" = "1" ]; then
@@ -272,11 +389,10 @@ for code in $TOOLS_FROM_ENV; do
   [ -z "$code" ] && continue
   path=$(lab_te_resolve_source "$code")
   [ -z "$path" ] && continue
+  lab_te_add_filtered_source "$path"
   if [ -f "$path" ]; then
-    grep -qxF "$path" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$path" >>/etc/lab/efs-tool-sources.lst
     lab_te_log "domain $code -> source $path (exists)"
   else
-    grep -qxF "$path" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$path" >>/etc/lab/efs-tool-sources.lst
     lab_te_log "WARN domain $code -> $path not found yet (listed for profile.d retry)"
   fi
 done
@@ -285,12 +401,15 @@ if [ ! -s /etc/lab/efs-tool-sources.lst ]; then
   lab_te_log "no tool source paths (TOOLS_LIST empty?)"
   exit 0
 fi
+# Raw list for Start Lab harden (lab-worker installs lab-pd-env-harden.sh over SSH).
+cp -a /etc/lab/efs-tool-sources.lst /etc/lab/efs-tool-sources.raw.lst 2>/dev/null || true
+[ -x /usr/local/sbin/lab-pd-env-harden.sh ] && /usr/local/sbin/lab-pd-env-harden.sh || true
 LABEFSTOOLENV
 chmod +x /usr/local/sbin/lab-efs-tool-env.sh
 
 cat >/etc/systemd/system/lab-efs-mount.service <<'LABEFSSVC'
 [Unit]
-Description=Lab FSx Lustre and tool bind mounts (/efs, /PD, ...)
+Description=Lab FSx Lustre and tool bind mounts (/data, /PD, ...)
 After=network-online.target
 Wants=network-online.target
 DefaultDependencies=yes
