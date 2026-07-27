@@ -886,6 +886,31 @@ lab_log "EFS: skipped (lab_efs_nfs_host empty)"
 %{ endif ~}
 %{ endif ~}
 
+# Futurense Labs (every lab): tcsh alias after FSx/EFS mount wiring — run via futurense_lab_setup.
+# Alias points at /data/... (Lustre); no-op until /data is mounted.
+cat >/etc/profile.d/zz-futurense-lab-setup.csh <<'FUTTCSH'
+# semiconlabs-futurense-lab-setup — Futurense project bootstrap (after FSx /data mount)
+if ( ! $?semiconlabs_futurense_lab_setup ) then
+  set semiconlabs_futurense_lab_setup = 1
+  alias futurense_lab_setup 'bash /data/futurense_modules/setup_project.sh'
+endif
+FUTTCSH
+chmod 644 /etc/profile.d/zz-futurense-lab-setup.csh 2>/dev/null || true
+for skel_rc in .tcshrc .cshrc; do
+  touch /etc/skel/$skel_rc 2>/dev/null || true
+  if [ -f /etc/skel/$skel_rc ] && ! grep -qF 'semiconlabs-futurense-lab-setup' /etc/skel/$skel_rc 2>/dev/null; then
+    printf '%s\n' '# semiconlabs-futurense-lab-setup' \
+      'if ( -r /etc/profile.d/zz-futurense-lab-setup.csh ) source /etc/profile.d/zz-futurense-lab-setup.csh' \
+      >>/etc/skel/$skel_rc
+  fi
+done
+if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-futurense-lab-setup' /etc/csh.cshrc 2>/dev/null; then
+  printf '%s\n' '# semiconlabs-futurense-lab-setup' \
+    'if ( -r /etc/profile.d/zz-futurense-lab-setup.csh ) source /etc/profile.d/zz-futurense-lab-setup.csh' \
+    >>/etc/csh.cshrc
+fi
+lab_log "installed Futurense tcsh alias futurense_lab_setup -> /data/futurense_modules/setup_project.sh"
+
 # Interactive shell for AD users (SSSD default_shell / override_shell). Install before join/finalize.
 LAB_SSSD_SH='${ad_sssd_default_shell}'
 if [[ "$LAB_SSSD_SH" == *tcsh* ]]; then
