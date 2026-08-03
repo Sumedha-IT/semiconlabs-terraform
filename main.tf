@@ -23,8 +23,8 @@ locals {
     "slabs-${local.lab_env_label}-${var.suffix}-${local.lab_username_label}"
   ) : "slabs-${local.lab_env_label}-instance-${var.suffix}"
 
-  # FSx Lustre shared-storage bootstrap block, spliced into user-data when lab_fsx_lustre_dns is set.
-  # Empty string => user-data keeps the legacy EFS mount path (lab_efs_nfs_host).
+  # FSx Lustre per-path mounts under /data (see lab-lustre-userdata.inc.tftpl).
+  # Empty string => skip shared storage (lab_efs_nfs_host unused).
   lab_lustre_userdata_inc = trimspace(var.lab_fsx_lustre_dns) != "" ? templatefile("${path.module}/lab-lustre-userdata.inc.tftpl", {
     lab_fsx_lustre_dns        = var.lab_fsx_lustre_dns
     lab_fsx_lustre_mount_name = var.lab_fsx_lustre_mount_name

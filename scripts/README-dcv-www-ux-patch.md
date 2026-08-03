@@ -6,7 +6,11 @@
 2. Injects `lab-stale-tab-guard.js` (v9) and `custom-popup.js` into `/usr/share/dcv/www/`.
 3. Reverts mistaken duplicate-session message text to standard DCV **The connection has been closed**.
 
-**Multi-browser takeover** (browser 2 logs in, browser 1 evicted) is enforced by the **backend SSM eviction** triggered when browser 2 loads `/lab/<token>/` through dcv-router. The dcv.conf settings above are belt-and-suspenders; virtual sessions rely on the backend path.
+**Multi-browser takeover** (browser 2 logs in, browser 1 evicted) is enforced by the
+**portal** calling `POST /labs-api/dcv/prepare-takeover` before opening the lab URL
+(SSM close-connection). Proxy document-load eviction (`LAB_DCV_TAKEOVER_ON_NAV`) defaults
+**off** so refresh / readiness probes do not kick an active session. The dcv.conf settings
+above are belt-and-suspenders; virtual sessions rely on prepare-takeover + max-concurrent-clients.
 
 Sessions already use `--max-concurrent-clients 1` from the backend.
 
@@ -14,8 +18,9 @@ Sessions already use `--max-concurrent-clients 1` from the backend.
 
 | Scenario | Result |
 |----------|--------|
-| DCV active in browser 1, same user opens lab URL in browser 2 | Backend evicts browser 1 via SSM; browser 2 connects |
-| Browser 1 after eviction | **The connection has been closed** (standard DCV) |
+| DCV active in browser 1, Open Lab from portal in browser 2 | Portal `prepare-takeover` evicts browser 1; browser 2 connects |
+| Refresh / keep working in the same DCV tab | Connection stays (no proxy nav eviction by default) |
+| Browser 1 after intentional eviction | **The connection has been closed** (standard DCV) |
 | Stop Lab, return to old DCV tab | **The connection has been closed** |
 | First Open Lab | Portal OK dialog + `custom-popup.js` alert |
 

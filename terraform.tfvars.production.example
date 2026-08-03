@@ -2,7 +2,7 @@
 # Backend normally writes terraform.tfvars at apply time from .env (see Semiconlabs-backend/.env.production.example).
 
 lab_environment            = "production"
-ami_id                     = "ami-066401294ec783ea4"
+ami_id                     = "ami-0d694a9992f4d0511"
 instance_type              = "m6a.xlarge"
 subnet_id                  = "subnet-095905a6af90f3c5c"   # semecon-labs-prod-lab-private-1 (no NAT)
 lab_security_group_id      = "sg-0addb5436378bc42a"       # semecon-labs-prod-lab-only-sg (restricted egress)
@@ -19,5 +19,5 @@ ad_join_user               = "admin"
 ad_join_mechanism          = "realm_userdata"
 enable_ad_join             = true
 
-# lab_efs_nfs_host           = "fs-xxxx.efs.ap-south-1.amazonaws.com"
-# lab_efs_mount_target_ip    = "10.50.x.x"
+# lab_fsx_lustre_dns          = "10.50.10.147"
+# lab_fsx_lustre_mount_name   = "t4zh7bev"

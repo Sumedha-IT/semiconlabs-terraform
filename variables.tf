@@ -13,9 +13,9 @@ variable "instance_name" {
 }
 
 variable "ami_id" {
-  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM+Lustre client pre-baked; AD join + SSSD finalize in user-data / SSM). Must ship lustre-client + kernel versionlock or FSx mounts fail with 'lustre kernel module not loaded'."
+  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM+Lustre client pre-baked; AD join + SSSD finalize in user-data / SSM). Must ship lustre-client + kernel versionlock or FSx mounts fail with 'lustre kernel module not loaded'. Promoted from staging (ami-0d694a9992f4d0511)."
   type        = string
-  default     = "ami-029ab927ae6f71d21"
+  default     = "ami-0d694a9992f4d0511"
 }
 
 variable "name" {
@@ -327,41 +327,36 @@ variable "ad_sssd_default_shell" {
   default     = "/bin/tcsh"
 }
 
-# EFS NFS host (DNS only, no ":/" suffix). User-data mounts nfs4 host:/ once to /efs (EFS does not export subpaths as separate NFS roots).
+# Legacy EFS NFS host (unused in prod — FSx Lustre per-path mounts under /data only).
 variable "lab_efs_nfs_host" {
   type        = string
-  default     = "fs-0985e64c096c42f09.efs.ap-south-1.amazonaws.com"
-  description = "EFS filesystem DNS name for lab mounts (same region as instance). Empty string skips all EFS logic in user-data. Ignored when lab_fsx_lustre_dns is set (Lustre takes precedence; EFS is the rollback path)."
+  default     = ""
+  description = "Legacy EFS filesystem DNS. Empty (default). Prod uses FSx Lustre per-path mounts under /data only (no /efs, no /PD|/DV|/AL binds)."
 }
 
-# FSx for Lustre (shared PROD tool storage) — the prod default. user-data mounts Lustre at /efs
-# (not EFS/NFS) and binds /PD|/DV|/AL + /tools the same way. Prod slabs FSx = fs-09f8ba285ecf05b0e,
-# mount name t4zh7bev. Value is the FSx MGS *IP* (not DNS): this is the exact NID validated on staging
-# and it works both same-VPC and cross-VPC (the private DNS name fails to resolve over peering ->
-# "mount.lustre: Can't parse NID"). Re-check if the FSx is ever recreated:
-#   aws fsx describe-file-systems --file-system-ids fs-09f8ba285ecf05b0e --query 'FileSystems[0].NetworkInterfaceIds'
-# The lab-worker can override per apply via terraform.tfvars (LAB_FSX_LUSTRE_DNS env). Set to "" only
-# to deliberately roll back to the legacy EFS path (lab_efs_nfs_host).
+# FSx for Lustre (shared PROD tool storage) — the prod default.
+# Per-path IT form: mount -t lustre <ip>:/<mountname>/<rel> /data/<rel>
+# Prod slabs FSx = fs-09f8ba285ecf05b0e, mount name t4zh7bev, MGS IP 10.50.10.147.
 variable "lab_fsx_lustre_dns" {
   type        = string
   default     = "10.50.10.147"
-  description = "FSx Lustre MGS NID IP (<ip>@tcp:/<mount>) — staging-tested prod FSx. Empty skips Lustre and falls back to lab_efs_nfs_host."
+  description = "FSx Lustre MGS IP or hostname. User-data mounts per-path: mount -t lustre <ip>:/<mountname>/<rel> /data/<rel>. Empty skips shared storage."
 }
 
 variable "lab_fsx_lustre_mount_name" {
   type        = string
   default     = "t4zh7bev"
-  description = "FSx Lustre mount name from console (prod slabs fsx). Used as @tcp:/<name>."
+  description = "FSx Lustre mount name (prod slabs). Used in mount -t lustre <host>:/<mountname>/<rel> /data/<rel>."
 }
 
-# After root mount on /efs, user-data mkdirs /efs/tools/<code> on the same filesystem (PD / DV / AL). Not separate NFS mounts.
+# Domain codes → per-path Lustre mounts under /data (see docs/LAB_FSX_MOUNT_AND_TOOL_GROUPS.md).
 variable "lab_efs_tools_mount_codes" {
   type        = list(string)
   default     = []
-  description = "Per IT runbook: after nfs root on /efs, user-data bind-mounts /efs/tools/<code> → /<code> for each code (PD/DV/AL). Set per learner domain at apply time (e.g. [\"PD\"] only). Empty [] = root /efs only, no /PD /DV /AL binds."
+  description = "Domain codes for per-path Lustre mounts under /data (PD/DV/AL/FUTURENSE). Set per learner at apply time (e.g. [\"PD\"]). Empty [] mounts nothing."
   validation {
-    condition     = length(var.lab_efs_tools_mount_codes) == 0 || alltrue([for c in var.lab_efs_tools_mount_codes : contains(["PD", "DV", "AL"], c)])
-    error_message = "lab_efs_tools_mount_codes must be empty or contain only PD, DV, or AL."
+    condition     = length(var.lab_efs_tools_mount_codes) == 0 || alltrue([for c in var.lab_efs_tools_mount_codes : contains(["PD", "DV", "AL", "FUTURENSE"], c)])
+    error_message = "lab_efs_tools_mount_codes must be empty or contain only PD, DV, AL, or FUTURENSE."
   }
 }
 
