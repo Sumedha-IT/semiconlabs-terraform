@@ -67,20 +67,14 @@ lab_fsx_host() {
   return 0
 }
 
-# Drop legacy full-FS mounts so /data is local and only per-path mounts remain.
+# Drop legacy mounts only. Do NOT umount intended per-path Lustre mounts under /data
+# (tearing them down then failing modprobe leaves the guest with empty /data dirs).
 lab_clear_legacy_full_mounts() {
   local m
-  for m in /PD /AL /DV /tools \
-    /data/tools/PD /data/tools/DV /data/tools/AL \
-    /data/tools /data/pdk /data/DV /data/semicon_labs_pd /data/futurense_modules; do
-    if mountpoint -q "$m" 2>/dev/null; then
+  for m in /PD /AL /DV /tools /var/lib/lab/fsx /mnt/data /mnt/lab-fsx; do
+    if mountpoint -q "$m" 2>/dev/null || lab_is_lustre_at "$m"; then
       umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
-    fi
-  done
-  for m in /var/lib/lab/fsx /mnt/data /mnt/lab-fsx; do
-    if lab_is_lustre_at "$m"; then
-      umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
-      lab_log "OK: umount legacy full mount $m"
+      lab_log "OK: umount legacy $m"
     fi
   done
   if lab_is_lustre_at /data; then
@@ -93,6 +87,25 @@ lab_clear_legacy_full_mounts() {
   fi
   mkdir -p "$${DATA_ROOT}" 2>/dev/null || true
   return 0
+}
+
+lab_ensure_lustre_module() {
+  local i out
+  for i in 1 2 3 4 5 6; do
+    if lsmod 2>/dev/null | grep -qE '^lustre\b' || [ -d /sys/module/lustre ]; then
+      return 0
+    fi
+    out=$(modprobe lustre 2>&1) || true
+    [ -n "$out" ] && lab_log "modprobe lustre: $out"
+    modprobe lnet 2>/dev/null || true
+    modprobe lustre 2>/dev/null || true
+    sleep "$i"
+  done
+  if lsmod 2>/dev/null | grep -qE 'lustre' || [ -d /sys/module/lustre ]; then
+    return 0
+  fi
+  lab_log "FAIL lustre kernel module not loaded (lsmod=$(lsmod 2>/dev/null | grep -i lustre || echo none))"
+  return 1
 }
 
 # IT form: mount -t lustre <host>:/<mountname>/<rel> /data/<rel>
@@ -246,13 +259,7 @@ lab_verify_mounts() {
 lab_run_mount_pass() {
   local mount_rc=0
   lab_clear_legacy_full_mounts || return 1
-  if ! lsmod 2>/dev/null | grep -q lustre; then
-    modprobe lustre 2>/dev/null || true
-  fi
-  if ! lsmod 2>/dev/null | grep -q lustre; then
-    lab_log "FAIL lustre kernel module not loaded"
-    return 1
-  fi
+  lab_ensure_lustre_module || return 1
   if ! command -v timeout >/dev/null 2>&1; then
     lab_log "WARN timeout command missing"
     return 1
@@ -262,6 +269,14 @@ lab_run_mount_pass() {
   lab_verify_mounts || mount_rc=1
   return $mount_rc
 }
+
+# Serialize concurrent remounts (systemd + @reboot cron + Start Lab often overlap).
+mkdir -p /var/lock
+exec 9>/var/lock/lab-lustre-mount.lock
+if ! flock -n 9; then
+  lab_log "another remount in progress; waiting for lock"
+  flock 9
+fi
 
 lab_log "start FSx Lustre FSX_DNS=$${FSX_DNS} mount=$${FSX_MOUNT_NAME} data=$${DATA_ROOT} tools=[$TOOLS_LIST] (per-path)"
 _max_pass=4
