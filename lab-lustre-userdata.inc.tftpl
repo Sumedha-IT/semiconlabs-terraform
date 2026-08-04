@@ -96,17 +96,15 @@ lab_clear_legacy_full_mounts() {
 }
 
 # IT form: mount -t lustre <host>:/<mountname>/<rel> /data/<rel>
+# Retries with backoff — Stop→Start often races network/FSx readiness.
 lab_lustre_mount_path() {
   local rel="$1"
   local dst="$${DATA_ROOT}/$rel"
-  local host spec
+  local host spec attempt
   lab_prepare_mount_point "$dst" || return 1
   if lab_is_lustre_at "$dst"; then
     lab_log "OK: already lustre $dst"
     return 0
-  fi
-  if findmnt -n "$dst" >/dev/null 2>&1 || mountpoint -q "$dst" 2>/dev/null; then
-    umount "$dst" 2>/dev/null || umount -l "$dst" 2>/dev/null || true
   fi
   host=$(lab_fsx_host) || return 1
   case "$${FSX_MOUNT_NAME}" in
@@ -117,16 +115,30 @@ lab_lustre_mount_path() {
   esac
   modprobe lustre 2>/dev/null || true
   spec="$${host}:/$${FSX_MOUNT_NAME}/$${rel}"
-  if timeout 90 mount -t lustre "$spec" "$dst" 2>&1 | tee -a "$LOG"; then
-    lab_log "OK: mount -t lustre $spec $dst"
-    return 0
-  fi
-  # Fallback with flock options (same target)
-  if timeout 90 mount -t lustre -o relatime,flock "$spec" "$dst" 2>&1 | tee -a "$LOG"; then
-    lab_log "OK: mount -t lustre -o relatime,flock $spec $dst"
-    return 0
-  fi
-  lab_log "FAIL: lustre mount $spec -> $dst"
+  for attempt in 1 2 3 4 5; do
+    if lab_is_lustre_at "$dst"; then
+      lab_log "OK: already lustre $dst"
+      return 0
+    fi
+    if findmnt -n "$dst" >/dev/null 2>&1 || mountpoint -q "$dst" 2>/dev/null; then
+      umount "$dst" 2>/dev/null || umount -l "$dst" 2>/dev/null || true
+    fi
+    if timeout 90 mount -t lustre "$spec" "$dst" 2>&1 | tee -a "$LOG"; then
+      if lab_is_lustre_at "$dst"; then
+        lab_log "OK: mount -t lustre $spec $dst (attempt $attempt)"
+        return 0
+      fi
+    fi
+    if timeout 90 mount -t lustre -o relatime,flock "$spec" "$dst" 2>&1 | tee -a "$LOG"; then
+      if lab_is_lustre_at "$dst"; then
+        lab_log "OK: mount -t lustre -o relatime,flock $spec $dst (attempt $attempt)"
+        return 0
+      fi
+    fi
+    lab_log "RETRY $attempt/5: lustre mount $spec -> $dst"
+    sleep $((attempt * 3))
+  done
+  lab_log "FAIL: lustre mount $spec -> $dst after 5 attempts"
   return 1
 }
 
@@ -137,39 +149,41 @@ lab_lustre_mount_path() {
 # FUTURENSE (backend sets when domain/org is Futurense): /data/futurense_modules
 # Also mounts PD+DV when those codes are in TOOLS_LIST (Futurense → PD DV FUTURENSE).
 lab_mount_domain_paths() {
-  local c rel seen_pdk=0
+  local c rel seen_pdk=0 fail=0
   mkdir -p "$${DATA_ROOT}" 2>/dev/null || true
   for c in $TOOLS_LIST; do
     [ -z "$c" ] && continue
     case "$(echo "$c" | tr '[:lower:]' '[:upper:]')" in
       PD)
         for rel in tools/PD semicon_labs_pd pdk; do
-          lab_lustre_mount_path "$rel" || true
+          lab_lustre_mount_path "$rel" || fail=1
         done
         seen_pdk=1
         ;;
       DV)
         for rel in tools/DV DV; do
-          lab_lustre_mount_path "$rel" || true
+          lab_lustre_mount_path "$rel" || fail=1
         done
         ;;
       AL)
-        lab_lustre_mount_path tools/AL || true
+        lab_lustre_mount_path tools/AL || fail=1
         if [ "$seen_pdk" != "1" ]; then
-          lab_lustre_mount_path pdk || true
+          lab_lustre_mount_path pdk || fail=1
           seen_pdk=1
         fi
         ;;
       FUTURENSE)
-        lab_lustre_mount_path futurense_modules || true
+        lab_lustre_mount_path futurense_modules || fail=1
         ;;
       *)
         lab_log "WARN: unknown TOOLS_LIST code '$c'"
         ;;
     esac
   done
+  return $fail
 }
 
+# Require real Lustre mounts — empty local dirs after Stop Lab must NOT count as OK.
 lab_verify_mounts() {
   local c fail=0
   if lab_is_lustre_at "$${DATA_ROOT}"; then
@@ -183,10 +197,10 @@ lab_verify_mounts() {
     case "$(echo "$c" | tr '[:lower:]' '[:upper:]')" in
       PD)
         for rel in semicon_labs_pd tools/PD pdk; do
-          if lab_is_lustre_at "$${DATA_ROOT}/$rel" || [ -d "$${DATA_ROOT}/$rel" ]; then
-            lab_log "VERIFY OK: $${DATA_ROOT}/$rel"
+          if lab_is_lustre_at "$${DATA_ROOT}/$rel"; then
+            lab_log "VERIFY OK: $${DATA_ROOT}/$rel (lustre)"
           else
-            lab_log "VERIFY FAIL: $${DATA_ROOT}/$rel"
+            lab_log "VERIFY FAIL: $${DATA_ROOT}/$rel not lustre-mounted"
             fail=1
           fi
         done
@@ -198,29 +212,30 @@ lab_verify_mounts() {
         ;;
       DV)
         for rel in DV tools/DV; do
-          if lab_is_lustre_at "$${DATA_ROOT}/$rel" || [ -d "$${DATA_ROOT}/$rel" ]; then
-            lab_log "VERIFY OK: $${DATA_ROOT}/$rel"
+          if lab_is_lustre_at "$${DATA_ROOT}/$rel"; then
+            lab_log "VERIFY OK: $${DATA_ROOT}/$rel (lustre)"
           else
-            lab_log "VERIFY FAIL: $${DATA_ROOT}/$rel"
+            lab_log "VERIFY FAIL: $${DATA_ROOT}/$rel not lustre-mounted"
             fail=1
           fi
         done
         ;;
       AL)
         for rel in tools/AL pdk; do
-          if lab_is_lustre_at "$${DATA_ROOT}/$rel" || [ -d "$${DATA_ROOT}/$rel" ]; then
-            lab_log "VERIFY OK: $${DATA_ROOT}/$rel"
+          if lab_is_lustre_at "$${DATA_ROOT}/$rel"; then
+            lab_log "VERIFY OK: $${DATA_ROOT}/$rel (lustre)"
           else
-            lab_log "VERIFY FAIL: $${DATA_ROOT}/$rel"
+            lab_log "VERIFY FAIL: $${DATA_ROOT}/$rel not lustre-mounted"
             fail=1
           fi
         done
         ;;
       FUTURENSE)
-        if lab_is_lustre_at "$${DATA_ROOT}/futurense_modules" || [ -d "$${DATA_ROOT}/futurense_modules" ]; then
-          lab_log "VERIFY OK: /data/futurense_modules"
+        if lab_is_lustre_at "$${DATA_ROOT}/futurense_modules"; then
+          lab_log "VERIFY OK: /data/futurense_modules (lustre)"
         else
-          lab_log "VERIFY WARN: /data/futurense_modules"
+          lab_log "VERIFY FAIL: /data/futurense_modules not lustre-mounted"
+          fail=1
         fi
         ;;
     esac
@@ -229,6 +244,7 @@ lab_verify_mounts() {
 }
 
 lab_run_mount_pass() {
+  local mount_rc=0
   lab_clear_legacy_full_mounts || return 1
   if ! lsmod 2>/dev/null | grep -q lustre; then
     modprobe lustre 2>/dev/null || true
@@ -242,12 +258,13 @@ lab_run_mount_pass() {
     return 1
   fi
   mkdir -p "$${DATA_ROOT}" 2>/dev/null || true
-  lab_mount_domain_paths
-  lab_verify_mounts
+  lab_mount_domain_paths || mount_rc=1
+  lab_verify_mounts || mount_rc=1
+  return $mount_rc
 }
 
 lab_log "start FSx Lustre FSX_DNS=$${FSX_DNS} mount=$${FSX_MOUNT_NAME} data=$${DATA_ROOT} tools=[$TOOLS_LIST] (per-path)"
-_max_pass=3
+_max_pass=4
 _pass=0
 while [ "$_pass" -lt "$_max_pass" ]; do
   _pass=$((_pass + 1))
@@ -257,7 +274,7 @@ while [ "$_pass" -lt "$_max_pass" ]; do
     lab_log "SUMMARY OK (pass $_pass)"
     exit 0
   fi
-  [ "$_pass" -lt "$_max_pass" ] && sleep 15
+  [ "$_pass" -lt "$_max_pass" ] && sleep $((_pass * 10))
 done
 lab_log "FAIL Lustre mounts after $_max_pass attempts"
 exit 1
