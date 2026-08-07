@@ -36,10 +36,18 @@ fi
 
 lab_prepare_mount_point() {
   local mp="$$1"
+  local parent
   [ -n "$$mp" ] || return 1
   [ -d "$$mp" ] && return 0
   if [ -e "$$mp" ]; then
     mv "$$mp" "$${mp}.lab-pre-mount" 2>/dev/null || rm -f "$$mp" 2>/dev/null || true
+  fi
+  # Never mkdir deep paths while a parent is already Lustre — that writes empty
+  # dirs onto shared FSx (e.g. /data/tools/PD/tools/PD). Clear full /data first.
+  parent=$$(dirname "$$mp")
+  if lab_is_lustre_at /data || lab_is_lustre_at "$$parent"; then
+    lab_log "WARN: prepare $$mp while lustre parent present — clearing legacy full mounts"
+    lab_clear_legacy_full_mounts || true
   fi
   mkdir -p "$$mp" || return 1
 }
@@ -50,6 +58,48 @@ lab_is_lustre_at() {
   local mp="$$1"
   [ -n "$$mp" ] || return 1
   awk -v mp="$$mp" '$$2 == mp && $$3 == "lustre" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null
+}
+
+# Drop empty nested tools/<CODE>/tools/<CODE> leftovers on FSx (shared; only if empty).
+lab_prune_empty_nested_tool_dirs() {
+  local code="$$1"
+  local base nested tools_dir
+  case "$$code" in
+    PD|DV|AL) ;;
+    *) return 0 ;;
+  esac
+  base="$${DATA_ROOT}/tools/$${code}"
+  [ -d "$$base" ] || return 0
+  nested="$${base}/tools/$${code}"
+  if [ -d "$$nested" ]; then
+    if [ -n "$$(find "$$nested" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit 2>/dev/null)" ]; then
+      lab_log "SKIP: nested $$nested is not empty — leave for IT cleanup"
+    elif rmdir "$$nested" 2>/dev/null; then
+      lab_log "OK: removed empty nested $$nested"
+    else
+      lab_log "WARN: could not rmdir empty nested $$nested"
+    fi
+  fi
+  tools_dir="$${base}/tools"
+  if [ -d "$$tools_dir" ] && [ -z "$$(ls -A "$$tools_dir" 2>/dev/null)" ]; then
+    rmdir "$$tools_dir" 2>/dev/null && lab_log "OK: removed empty $$tools_dir" || true
+  fi
+}
+
+# Prune for every tool code currently in TOOLS_LIST.
+lab_prune_nested_for_tools_list() {
+  local c
+  for c in $$TOOLS_LIST; do
+    [ -z "$$c" ] && continue
+    case "$$(echo "$$c" | tr '[:lower:]' '[:upper:]')" in
+      PD|FUTURENSE) lab_prune_empty_nested_tool_dirs PD ;;
+      DV) lab_prune_empty_nested_tool_dirs DV ;;
+      AL) lab_prune_empty_nested_tool_dirs AL ;;
+    esac
+  done
+  case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in
+    *" FUTURENSE "*) lab_prune_empty_nested_tool_dirs DV ;;
+  esac
 }
 
 lab_has_lustre_children_under_data() {
@@ -215,12 +265,14 @@ lab_mount_domain_paths() {
         for rel in tools/PD semicon_labs_pd pdk; do
           lab_lustre_mount_path "$$rel" || fail=1
         done
+        lab_prune_empty_nested_tool_dirs PD
         seen_pdk=1
         ;;
       DV)
         for rel in tools/DV DV; do
           lab_lustre_mount_path "$$rel" || fail=1
         done
+        lab_prune_empty_nested_tool_dirs DV
         ;;
       AL)
         lab_lustre_mount_path tools/AL || fail=1
@@ -228,9 +280,15 @@ lab_mount_domain_paths() {
           lab_lustre_mount_path pdk || fail=1
           seen_pdk=1
         fi
+        lab_prune_empty_nested_tool_dirs AL
         ;;
       FUTURENSE)
-        lab_lustre_mount_path futurense_modules || fail=1
+        # Futurense: Cadence tools + modules only — not /data/semicon_labs_pd or /data/DV.
+        for rel in tools/PD pdk tools/DV futurense_modules; do
+          lab_lustre_mount_path "$$rel" || fail=1
+        done
+        lab_prune_empty_nested_tool_dirs PD
+        lab_prune_empty_nested_tool_dirs DV
         ;;
       *)
         lab_log "WARN: unknown TOOLS_LIST code '$$c'"
@@ -287,12 +345,14 @@ lab_verify_mounts() {
         done
         ;;
       FUTURENSE)
-        if lab_is_lustre_at "$${DATA_ROOT}/futurense_modules"; then
-          lab_log "VERIFY OK: /data/futurense_modules (lustre)"
-        else
-          lab_log "VERIFY FAIL: /data/futurense_modules not lustre-mounted"
-          fail=1
-        fi
+        for rel in tools/PD pdk tools/DV futurense_modules; do
+          if lab_is_lustre_at "$${DATA_ROOT}/$$rel"; then
+            lab_log "VERIFY OK: $${DATA_ROOT}/$$rel (lustre)"
+          else
+            lab_log "VERIFY FAIL: $${DATA_ROOT}/$$rel not lustre-mounted"
+            fail=1
+          fi
+        done
         ;;
     esac
   done
@@ -324,7 +384,9 @@ lab_paths_already_ok() {
         done
         ;;
       FUTURENSE)
-        lab_is_lustre_at "$${DATA_ROOT}/futurense_modules" || return 1
+        for rel in tools/PD pdk tools/DV futurense_modules; do
+          lab_is_lustre_at "$${DATA_ROOT}/$$rel" || return 1
+        done
         ;;
     esac
   done
@@ -333,10 +395,11 @@ lab_paths_already_ok() {
 
 lab_run_mount_pass() {
   local mount_rc=0
-  # If already healthy, do nothing (avoids destructive clear + modprobe races).
+  # If already healthy, still prune nested empty junk (do not skip that).
   if lab_paths_already_ok; then
     lab_verify_mounts || true
-    lab_log "already healthy; skipping remount work"
+    lab_prune_nested_for_tools_list
+    lab_log "already healthy; skipped remount, ran nested-dir prune"
     return 0
   fi
   lab_clear_legacy_full_mounts || return 1
@@ -347,6 +410,7 @@ lab_run_mount_pass() {
   fi
   mkdir -p "$${DATA_ROOT}" 2>/dev/null || true
   lab_mount_domain_paths || mount_rc=1
+  lab_prune_nested_for_tools_list
   lab_verify_mounts || mount_rc=1
   return $$mount_rc
 }

@@ -71,12 +71,23 @@ source /data/tools/AL/alsource
 ### Futurense
 
 ```bash
-mkdir -p /data/futurense_modules
+mkdir -p /data/tools/PD /data/pdk /data/tools/DV /data/futurense_modules
 
+mount -t lustre 10.50.10.147:/t4zh7bev/tools/PD /data/tools/PD
+mount -t lustre 10.50.10.147:/t4zh7bev/pdk /data/pdk
+mount -t lustre 10.50.10.147:/t4zh7bev/tools/DV /data/tools/DV
 mount -t lustre 10.50.10.147:/t4zh7bev/futurense_modules /data/futurense_modules
 ```
 
-No vendor `*source` for Futurense in the current flow (modules path only). If it maps to a hidden PD/DV track at Start Lab, that track's source above is used.
+Do **not** mount `/data/semicon_labs_pd` or `/data/DV` for Futurense.
+
+```tcsh
+cd /data/tools/PD
+source /data/tools/PD/pdsource
+# and/or
+cd /data/tools/DV
+source /data/tools/DV/dvsource
+```
 
 ---
 
