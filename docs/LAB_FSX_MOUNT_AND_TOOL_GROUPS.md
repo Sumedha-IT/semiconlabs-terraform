@@ -19,6 +19,8 @@ No `/PD`, `/DV`, or `/AL` bind shortcuts — source from actual paths only.
 
 Domain selection via `TOOLS_LIST` (PD / DV / AL / FUTURENSE) is unchanged.
 
+**Futurense (`FUTURENSE`)** mounts: `tools/PD`, `pdk`, `tools/DV`, `futurense_modules` — **not** `/data/semicon_labs_pd` or `/data/DV`.
+
 ### PD
 
 ```bash

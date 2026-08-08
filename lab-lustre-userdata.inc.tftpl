@@ -100,6 +100,22 @@ lab_prune_empty_nested_tool_dirs() {
   fi
 }
 
+# Futurense must not keep leftover PD launcher tree or full /data/DV from a prior PD/DV profile.
+lab_drop_futurense_excluded_mounts() {
+  case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in
+    *" FUTURENSE "*) ;;
+    *) return 0 ;;
+  esac
+  local rel dst
+  for rel in semicon_labs_pd DV; do
+    dst="$${DATA_ROOT}/$$rel"
+    if lab_is_lustre_at "$$dst" || mountpoint -q "$$dst" 2>/dev/null; then
+      lab_umount_target "$$dst" || true
+      lab_log "OK: umount Futurense-excluded $$dst"
+    fi
+  done
+}
+
 # Stray host /tools (not a mount) left after old EFS/yam4tp mkdir.
 lab_prune_stray_root_tools() {
   if awk '$$2 == "/tools" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null; then
@@ -423,6 +439,7 @@ lab_run_mount_pass() {
   local mount_rc=0
   # If already healthy, still prune nested empty junk (do not skip that).
   if lab_paths_already_ok; then
+    lab_drop_futurense_excluded_mounts
     lab_verify_mounts || true
     lab_prune_nested_for_tools_list
     lab_log "already healthy; skipped remount, ran nested-dir prune"
@@ -435,7 +452,9 @@ lab_run_mount_pass() {
     return 1
   fi
   mkdir -p "$${DATA_ROOT}" 2>/dev/null || true
+  lab_drop_futurense_excluded_mounts
   lab_mount_domain_paths || mount_rc=1
+  lab_drop_futurense_excluded_mounts
   lab_prune_nested_for_tools_list
   lab_verify_mounts || mount_rc=1
   return $$mount_rc
