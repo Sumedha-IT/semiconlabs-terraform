@@ -60,7 +60,18 @@ lab_is_lustre_at() {
   awk -v mp="$$mp" '$$2 == mp && $$3 == "lustre" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null
 }
 
-# Drop empty nested tools/<CODE>/tools/<CODE> leftovers on FSx (shared; only if empty).
+# Remove empty post-mount junk: yam4tp file/dir (0 bytes or empty dir).
+lab_rm_empty_yam4tp() {
+  local f="$$1"
+  [ -e "$$f" ] || return 0
+  if [ -f "$$f" ] && [ ! -s "$$f" ]; then
+    rm -f "$$f" 2>/dev/null && lab_log "OK: removed empty $$f" || true
+  elif [ -d "$$f" ] && [ -z "$$(ls -A "$$f" 2>/dev/null)" ]; then
+    rmdir "$$f" 2>/dev/null && lab_log "OK: removed empty dir $$f" || true
+  fi
+}
+
+# Drop empty nested tools/<CODE>/tools (and empty yam4tp) leftovers on FSx.
 lab_prune_empty_nested_tool_dirs() {
   local code="$$1"
   local base nested tools_dir
@@ -70,7 +81,11 @@ lab_prune_empty_nested_tool_dirs() {
   esac
   base="$${DATA_ROOT}/tools/$${code}"
   [ -d "$$base" ] || return 0
+  tools_dir="$${base}/tools"
   nested="$${base}/tools/$${code}"
+  lab_rm_empty_yam4tp "$${tools_dir}/yam4tp"
+  lab_rm_empty_yam4tp "$${base}/yam4tp"
+  lab_rm_empty_yam4tp "$${DATA_ROOT}/tools/yam4tp"
   if [ -d "$$nested" ]; then
     if [ -n "$$(find "$$nested" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit 2>/dev/null)" ]; then
       lab_log "SKIP: nested $$nested is not empty — leave for IT cleanup"
@@ -80,9 +95,19 @@ lab_prune_empty_nested_tool_dirs() {
       lab_log "WARN: could not rmdir empty nested $$nested"
     fi
   fi
-  tools_dir="$${base}/tools"
   if [ -d "$$tools_dir" ] && [ -z "$$(ls -A "$$tools_dir" 2>/dev/null)" ]; then
     rmdir "$$tools_dir" 2>/dev/null && lab_log "OK: removed empty $$tools_dir" || true
+  fi
+}
+
+# Stray host /tools (not a mount) left after old EFS/yam4tp mkdir.
+lab_prune_stray_root_tools() {
+  if awk '$$2 == "/tools" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null; then
+    return 0
+  fi
+  lab_rm_empty_yam4tp /tools/yam4tp
+  if [ -d /tools ] && [ -z "$$(ls -A /tools 2>/dev/null)" ]; then
+    rmdir /tools 2>/dev/null && lab_log "OK: removed empty /tools" || true
   fi
 }
 
@@ -100,6 +125,7 @@ lab_prune_nested_for_tools_list() {
   case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in
     *" FUTURENSE "*) lab_prune_empty_nested_tool_dirs DV ;;
   esac
+  lab_prune_stray_root_tools
 }
 
 lab_has_lustre_children_under_data() {

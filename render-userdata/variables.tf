@@ -9,7 +9,7 @@ variable "instance_name" {
 }
 variable "ami_id" {
   type    = string
-  default = "ami-0d694a9992f4d0511"
+  default = "ami-0248a5cc9bf3500c1"
 }
 variable "name" {
   type    = string

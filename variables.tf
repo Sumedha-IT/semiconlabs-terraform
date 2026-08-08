@@ -13,9 +13,9 @@ variable "instance_name" {
 }
 
 variable "ami_id" {
-  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM+Lustre client pre-baked; AD join + SSSD finalize in user-data / SSM). Must ship lustre-client + kernel versionlock or FSx mounts fail with 'lustre kernel module not loaded'. Promoted from staging (ami-0d694a9992f4d0511)."
+  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM+Lustre client pre-baked; AD join + SSSD finalize in user-data / SSM). Must ship lustre-client + kernel versionlock or FSx mounts fail with 'lustre kernel module not loaded'. Promoted from staging (ami-0248a5cc9bf3500c1)."
   type        = string
-  default     = "ami-0d694a9992f4d0511"
+  default     = "ami-0248a5cc9bf3500c1"
 }
 
 variable "name" {
