@@ -15,8 +15,8 @@ variable "instance_name" {
 variable "ami_id" {
   description = "Lab AMI — ap-south-1 Rocky XFCE golden (DCV+PAM+Lustre). Same image as staging. Must ship lustre-client + kernel versionlock or FSx mounts fail."
   type        = string
-  # Prior: ami-0248a5cc9bf3500c1
-  default     = "ami-0e39f934d23234213"
+  # Prior: ami-0e39f934d23234213, ami-0248a5cc9bf3500c1
+  default     = "ami-09a79dcfd63460a58"
 }
 
 variable "name" {
