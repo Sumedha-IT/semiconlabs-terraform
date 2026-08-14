@@ -51,10 +51,70 @@ while true; do
     continue
   fi
 
-  curl -sS -X POST "$CALLBACK_URL" \
-    -H "Content-Type: application/json" \
-    -H "X-Lab-Callback-Secret: $CALLBACK_SECRET" \
-    --data "{\"session_id\":$APP_SESSION_ID}" >/dev/null || true
+  # P2: classify from last dcv.log lines and POST reason + truncated detail.
+  python3 - "$CFG" <<'PY' || true
+import glob, json, os, re, sys, urllib.request
+
+cfg_path = sys.argv[1]
+with open(cfg_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+session_id = cfg.get("app_session_id")
+callback_url = (cfg.get("callback_url") or "").strip()
+secret = (cfg.get("callback_secret") or "").strip()
+if session_id is None or not callback_url or not secret:
+    raise SystemExit(0)
+
+chunks = []
+for path in sorted(glob.glob("/var/log/dcv/*.log")):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            lines = fh.readlines()[-40:]
+            if lines:
+                chunks.append("# " + os.path.basename(path))
+                chunks.extend(line.rstrip("\n") for line in lines)
+    except Exception:
+        pass
+detail = "\n".join(chunks)[-3500:]
+text = detail.lower()
+
+def classify(t: str) -> str:
+    if re.search(r"auth(entication)?\s*(fail|error|expired)|unauthorized|invalid\s*(token|cookie)|jwt|sso.*fail|verifier", t):
+        return "auth_expired"
+    if re.search(r"max(imum)?\s*(number\s*of\s*)?(concurrent\s*)?clients?|connection\s*limit|too many clients|client.*kicked|evict", t):
+        return "max_clients"
+    if re.search(r"premature|session\s+not\s+ready|before\s+.*ready|no\s+such\s+session", t):
+        return "sso_premature"
+    if re.search(r"idle\s*(timeout|disconnect)|gateway\s*timeout|proxy.*timeout|alb.*timeout|\b504\b|\b408\b", t):
+        return "proxy_timeout"
+    if re.search(r"network|connection\s*(reset|refused|closed|aborted)|broken\s*pipe|websocket.*(error|close|fail)|econnreset|etimedout", t):
+        return "network_drop"
+    if re.search(r"close[- ]session|session\s+(was\s+)?closed|server\s+closed|dcv\s+close|reboot|shutdown", t):
+        return "server_closed_session"
+    if re.search(r"logout|client\s*disconnect|user\s*closed|browser\s*closed", t):
+        return "client_closed"
+    return "client_closed" if not t.strip() else "unknown"
+
+payload = {
+    "session_id": int(session_id) if str(session_id).isdigit() else session_id,
+    "reason": classify(text),
+    "detail": detail or None,
+}
+req = urllib.request.Request(
+    callback_url,
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Content-Type": "application/json",
+        "X-Lab-Callback-Secret": secret,
+    },
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        resp.read()
+except Exception:
+    pass
+PY
 
   rm -f "$CFG"
   sleep "$POLL_SECONDS"
@@ -81,7 +141,5 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable semiconlabs-dcv-watch.service
-systemctl restart semiconlabs-dcv-watch.service || true
-
-echo "semiconlabs-dcv-watch installed. Create AMI from this instance, then set terraform ami_id / DEFAULT_LAB_CONFIGS.ami_id to the new id (repo default reference: ami-066401294ec783ea4)."
+systemctl enable --now semiconlabs-dcv-watch.service
+echo "Installed semiconlabs-dcv-watch.service (reason+log snippet callback)"

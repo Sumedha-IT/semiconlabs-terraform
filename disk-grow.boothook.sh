@@ -1,29 +1,21 @@
 #!/bin/bash
-# cloud-boothook - runs EARLY in the cloud-init init stage, on every boot.
-#
-# The DCV AMI ships an ~8G LVM root (/dev/cl/root) that is already ~99% full
-# (the base image plus stale /var/log/pcp logs captured from the build host).
-# On a larger EBS volume the partition/LVM are NOT auto-grown, so the root fs
-# stays 8G and fills immediately. cloud-init then crashes with
-# "OSError: [Errno 28] No space left on device" while writing its own status,
-# and the main bootstrap (cloud-final) never runs.
-#
-# This boothook frees the stale pcp logs for scratch space, then grows the
-# partition + PV + root LV (and its filesystem) to fill the disk BEFORE the
-# init stage needs to write anything. All steps are idempotent: once the LV
-# already fills the disk they are no-ops, so running every boot is safe.
+# Early disk grow (AMI: / on xvda4|nvme0n1p4 ~15G; /home on xvdb ~10G fstab). Idempotent.
 exec >>/var/log/lab-disk-grow.log 2>&1
-echo "[$(date -u +%FT%TZ)] boothook disk-grow start: $(df -h / 2>/dev/null | tail -1)"
-
-# Reclaim the ~650MB of stale Performance Co-Pilot logs baked into the AMI.
+echo "[$(date -u +%FT%TZ)] disk-grow start: $(df -h / 2>/dev/null | tail -1)"
 rm -rf /var/log/pcp/pmlogger/* 2>/dev/null || true
-
-if [ -b /dev/nvme0n1p2 ]; then
-  command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 2 || true
-  command -v pvresize >/dev/null 2>&1 && pvresize /dev/nvme0n1p2 || true
-  if command -v lvextend >/dev/null 2>&1 && lvs /dev/cl/root >/dev/null 2>&1; then
-    lvextend -r -l +100%FREE /dev/cl/root || true
-  fi
+grow_fs() {
+  local mp="$1" s f; s=$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null) || return 0
+  f=$(findmnt -n -o FSTYPE --target "$mp" 2>/dev/null) || return 0
+  case "$f" in xfs) xfs_growfs "$mp" 2>/dev/null || true ;; ext*) resize2fs "$s" 2>/dev/null || true ;; esac
+}
+# Prefer partition 4 (new AMI); else LVM p2 (legacy).
+if [ -b /dev/nvme0n1p4 ]; then growpart /dev/nvme0n1 4 2>/dev/null || true; grow_fs /
+elif [ -b /dev/xvda4 ]; then growpart /dev/xvda 4 2>/dev/null || true; grow_fs /
+elif [ -b /dev/nvme0n1p2 ]; then
+  growpart /dev/nvme0n1 2 2>/dev/null || true
+  pvresize /dev/nvme0n1p2 2>/dev/null || true
+  lvs /dev/cl/root >/dev/null 2>&1 && lvextend -r -l +100%FREE /dev/cl/root 2>/dev/null || true
 fi
-
-echo "[$(date -u +%FT%TZ)] boothook disk-grow done: $(df -h / 2>/dev/null | tail -1)"
+findmnt -n /home >/dev/null 2>&1 || { mkdir -p /home; mount /home 2>/dev/null || mount -a 2>/dev/null || true; }
+findmnt -n /home >/dev/null 2>&1 && grow_fs /home
+echo "[$(date -u +%FT%TZ)] disk-grow done: $(df -h / 2>/dev/null | tail -1)"

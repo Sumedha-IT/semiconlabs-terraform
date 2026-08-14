@@ -22,7 +22,9 @@ if [ -f /etc/lab/dcv-guard-rev ] && [ "$(cat /etc/lab/dcv-guard-rev 2>/dev/null)
   log "guard rev ok but [session-management] policy missing - re-applying"
 fi
 
-if [ -f /etc/dcv/dcv.conf ]; then
+if [ -f /etc/lab/dcv.conf.from-userdata ]; then
+  log "skip dcv.conf (owned by user-data)"
+elif [ -f /etc/dcv/dcv.conf ]; then
   # max-concurrent-clients belongs in [session-management]; client-eviction-policy belongs in
   # [session-management/automatic-console-session]. DCV ignores both in [connectivity] or [server]
   # and defaults to reject-new-connection (closes the NEW browser). Multi-browser takeover is

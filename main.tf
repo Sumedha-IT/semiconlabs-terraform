@@ -49,6 +49,7 @@ locals {
     ad_dns_ips                                = var.ad_dns_ips
     dcv_use_console_sessions                  = var.dcv_use_console_sessions
     dcv_web_listen_all                        = var.dcv_web_listen_all
+    dcv_auth_token_verifier_url               = var.dcv_auth_token_verifier_url
     ad_ssm_join_wait_max_sec                  = var.ad_ssm_join_wait_max_sec
     ad_ssm_association_delay                  = var.ad_ssm_association_delay
     ad_sssd_default_shell                     = var.ad_sssd_default_shell
@@ -159,13 +160,16 @@ resource "aws_instance" "CentOS8-AMD" {
 
   # EC2 user_data gzip payload must be <= 16384 bytes (see user-data-size.tf).
   user_data_base64 = data.cloudinit_config.lab.rendered
-  tags = {
-    Name           = local.lab_instance_display_name
-    Environment    = var.env_tag
-    LabEnvironment = var.lab_environment
-    map-migrated   = "DADS45OSDL"
-    LabBootstrap   = "PENDING"
-  }
+  tags = merge(
+    {
+      Name           = local.lab_instance_display_name
+      Environment    = var.env_tag
+      LabEnvironment = var.lab_environment
+      map-migrated   = "DADS45OSDL"
+      LabBootstrap   = "PENDING"
+    },
+    trimspace(var.student_id) != "" ? { student_id = trimspace(var.student_id) } : {},
+  )
 }
 
 # Let amazon-ssm-agent register with Fleet Manager before attaching JoinDirectoryServiceDomain.

@@ -1093,6 +1093,7 @@ systemctl reset-failed dcvserver 2>/dev/null || true
 # samples is documentation shorthand, not a DCV substitution - it breaks login (owner:%user%).
 # Named virtual sessions are created by the app backend after SSH, e.g.:
 #   sudo dcv create-session 'SumedhaIT_<user>' --owner '<upn>' --user '<posix>' --type virtual
+# Live EC2 userdata is user-data.sh.tftpl (this S3 bootstrap split is unused in prod).
 # See lab-docs/_dcv_doc_snippet.txt Step 3.3 (create-session=false).
 cat >/etc/dcv/dcv.conf <<'DCVBASE'
 [security]

@@ -85,6 +85,13 @@ variable "lab_username" {
   default     = ""
 }
 
+# PD Assist student_id — must match Nest lab_ad_username (enroll/topup/usage + VM key fetch).
+variable "student_id" {
+  description = "PD Assist student_id tag on the lab EC2 (same as lab_ad_username)."
+  type        = string
+  default     = ""
+}
+
 # Kept for backend tfvars compatibility; must stay production in this repository.
 variable "lab_environment" {
   description = "Must be production (staging fleet uses staging-labs-tf)."
@@ -291,6 +298,16 @@ variable "dcv_web_listen_all" {
   default     = true
 }
 
+variable "dcv_auth_token_verifier_url" {
+  description = <<-EOT
+    When non-empty, Setup Lab writes this as auth-token-verifier in /etc/dcv/dcv.conf.
+    Must be reachable from the lab VPC (ALB /v1/labs-api/dcv-routing/auth-token/verify, optional ?k=).
+    Empty = system/PAM password login only. Do not hardcode the k= token in git.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "ad_ssm_join_wait_max_sec" {
   description = "When ad_join_mechanism=ssm_aws_managed, poll up to this many seconds for join (SSM Automation runs after boot)."
   type        = number
@@ -353,7 +370,7 @@ variable "lab_fsx_lustre_mount_name" {
 variable "lab_efs_tools_mount_codes" {
   type        = list(string)
   default     = []
-  description = "Domain codes for per-path Lustre mounts under /data (PD/DV/AL/FUTURENSE). Set per learner at apply time (e.g. [\"PD\"]). Empty [] mounts nothing."
+  description = "Domain codes for per-path Lustre mounts under /data (PD/DV/AL/FUTURENSE). Set per learner at apply time (e.g. [\"PD\"]). Futurense must be [\"FUTURENSE\"] only — do not also pass PD/DV (those mount /data/semicon_labs_pd and /data/DV). Empty [] mounts nothing."
   validation {
     condition     = length(var.lab_efs_tools_mount_codes) == 0 || alltrue([for c in var.lab_efs_tools_mount_codes : contains(["PD", "DV", "AL", "FUTURENSE"], c)])
     error_message = "lab_efs_tools_mount_codes must be empty or contain only PD, DV, AL, or FUTURENSE."

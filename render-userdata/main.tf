@@ -65,6 +65,7 @@ locals {
     ad_dns_ips                                = var.ad_dns_ips
     dcv_use_console_sessions                  = var.dcv_use_console_sessions
     dcv_web_listen_all                        = var.dcv_web_listen_all
+    dcv_auth_token_verifier_url               = var.dcv_auth_token_verifier_url
     ad_ssm_join_wait_max_sec                  = var.ad_ssm_join_wait_max_sec
     ad_ssm_association_delay                  = var.ad_ssm_association_delay
     ad_sssd_default_shell                     = var.ad_sssd_default_shell
@@ -148,6 +149,7 @@ output "launch_spec" {
         "map-migrated" = "DADS45OSDL"
         LabBootstrap   = "PENDING"
       },
+      trimspace(var.student_id) != "" ? { student_id = trimspace(var.student_id) } : {},
       var.enable_ebs_autoresize ? { AutoResize = "true" } : {},
     )
     enableAdJoin          = var.enable_ad_join

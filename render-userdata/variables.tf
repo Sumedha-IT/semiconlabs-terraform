@@ -68,6 +68,10 @@ variable "lab_username" {
   type    = string
   default = ""
 }
+variable "student_id" {
+  type    = string
+  default = ""
+}
 variable "aws_region" {
   type    = string
   default = "ap-south-1"
@@ -149,6 +153,10 @@ variable "dcv_use_console_sessions" {
 variable "dcv_web_listen_all" {
   type    = bool
   default = true
+}
+variable "dcv_auth_token_verifier_url" {
+  type    = string
+  default = ""
 }
 variable "ad_ssm_join_wait_max_sec" {
   type    = number

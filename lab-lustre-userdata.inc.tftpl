@@ -100,19 +100,13 @@ lab_prune_empty_nested_tool_dirs() {
   fi
 }
 
-# Futurense must not keep leftover PD launcher tree or full /data/DV from a prior PD/DV profile.
-lab_drop_futurense_excluded_mounts() {
-  case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in
-    *" FUTURENSE "*) ;;
-    *) return 0 ;;
-  esac
+lab_drop_fut_x() {
+  case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in *" FUTURENSE "*) ;; *) return 0 ;; esac
   local rel dst
   for rel in semicon_labs_pd DV; do
     dst="$${DATA_ROOT}/$$rel"
-    if lab_is_lustre_at "$$dst" || mountpoint -q "$$dst" 2>/dev/null; then
-      lab_umount_target "$$dst" || true
-      lab_log "OK: umount Futurense-excluded $$dst"
-    fi
+    if lab_is_lustre_at "$$dst" || mountpoint -q "$$dst" 2>/dev/null; then lab_umount_target "$$dst" || true; fi
+    [ -d "$$dst" ] && ! lab_is_lustre_at "$$dst" && ! mountpoint -q "$$dst" 2>/dev/null && rmdir "$$dst" 2>/dev/null || true
   done
 }
 
@@ -190,7 +184,7 @@ lab_umount_target() {
 # Drop a full FSx mount on /data (legacy). Per-path mounts under /data/* are the target layout.
 lab_clear_legacy_full_mounts() {
   local m t
-  for m in /PD /AL /DV /tools /var/lib/lab/fsx /mnt/data /mnt/lab-fsx; do
+  for m in /PD /AL /DV /tools /data/tools /var/lib/lab/fsx /mnt/data /mnt/lab-fsx; do
     if mountpoint -q "$$m" 2>/dev/null || lab_is_lustre_at "$$m"; then
       lab_umount_target "$$m" || true
       lab_log "OK: umount legacy $$m"
@@ -241,7 +235,7 @@ lab_ensure_lustre_module() {
 lab_lustre_mount_path() {
   local rel="$$1"
   local dst="$${DATA_ROOT}/$$rel"
-  local host spec attempt
+  local host remote_rel remote_rels attempt spec spec_it
   lab_prepare_mount_point "$$dst" || return 1
   if lab_is_lustre_at "$$dst"; then
     lab_log "OK: already lustre $$dst"
@@ -255,45 +249,48 @@ lab_lustre_mount_path() {
       ;;
   esac
   lab_ensure_lustre_module || return 1
-  # Prefer AWS fileset form with @tcp; keep IT form (host:/mount/rel) as fallback.
-  spec="$${host}@tcp:/$${FSX_MOUNT_NAME}/$${rel}"
-  spec_it="$${host}:/$${FSX_MOUNT_NAME}/$${rel}"
-  for attempt in 1 2 3 4 5; do
-    if lab_is_lustre_at "$$dst"; then
-      lab_log "OK: already lustre $$dst"
-      return 0
-    fi
-    # Refuse to nest under a full /data lustre mount — clear it first.
-    if lab_is_lustre_at /data; then
-      lab_log "WARN: full /data lustre present before mounting $$dst; clearing"
-      lab_clear_legacy_full_mounts || true
-      lab_prepare_mount_point "$$dst" || return 1
-    fi
-    if findmnt -n "$$dst" >/dev/null 2>&1 || mountpoint -q "$$dst" 2>/dev/null; then
-      lab_umount_target "$$dst" || true
-    fi
-    if timeout 90 mount -t lustre -o relatime,flock "$$spec" "$$dst" 2>&1 | tee -a "$$LOG"; then
-      if lab_is_lustre_at "$$dst" && ! lab_is_lustre_at /data; then
-        lab_log "OK: mount -t lustre $$spec $$dst (attempt $$attempt)"
+  # Prod FSx exports tools/<CODE> — mount at /data/tools/<CODE>.
+  remote_rels="$$rel"
+  for remote_rel in $$remote_rels; do
+    spec="$${host}@tcp:/$${FSX_MOUNT_NAME}/$${remote_rel}"
+    spec_it="$${host}:/$${FSX_MOUNT_NAME}/$${remote_rel}"
+    for attempt in 1 2 3; do
+      if lab_is_lustre_at "$$dst"; then
+        lab_log "OK: already lustre $$dst"
         return 0
       fi
-    fi
-    if timeout 90 mount -t lustre "$$spec_it" "$$dst" 2>&1 | tee -a "$$LOG"; then
-      if lab_is_lustre_at "$$dst" && ! lab_is_lustre_at /data; then
-        lab_log "OK: mount -t lustre $$spec_it $$dst (attempt $$attempt)"
-        return 0
+      if lab_is_lustre_at /data; then
+        lab_log "WARN: full /data lustre present before mounting $$dst; clearing"
+        lab_clear_legacy_full_mounts || true
+        lab_prepare_mount_point "$$dst" || return 1
       fi
-    fi
-    if timeout 90 mount -t lustre -o relatime,flock "$$spec_it" "$$dst" 2>&1 | tee -a "$$LOG"; then
-      if lab_is_lustre_at "$$dst" && ! lab_is_lustre_at /data; then
-        lab_log "OK: mount -t lustre -o relatime,flock $$spec_it $$dst (attempt $$attempt)"
-        return 0
+      if findmnt -n "$$dst" >/dev/null 2>&1 || mountpoint -q "$$dst" 2>/dev/null; then
+        lab_umount_target "$$dst" || true
       fi
-    fi
-    lab_log "RETRY $$attempt/5: lustre mount $$rel -> $$dst (proc=$$(awk -v d="$$dst" '$$2==d || $$2=="/data"{print $$1,$$2,$$3}' /proc/mounts | tr '\n' ';'))"
-    sleep $$((attempt * 3))
+      if timeout 90 mount -t lustre -o relatime,flock "$$spec" "$$dst" 2>&1 | tee -a "$$LOG"; then
+        if lab_is_lustre_at "$$dst" && ! lab_is_lustre_at /data; then
+          lab_log "OK: mount -t lustre $$spec $$dst (attempt $$attempt)"
+          return 0
+        fi
+      fi
+      if timeout 90 mount -t lustre "$$spec_it" "$$dst" 2>&1 | tee -a "$$LOG"; then
+        if lab_is_lustre_at "$$dst" && ! lab_is_lustre_at /data; then
+          lab_log "OK: mount -t lustre $$spec_it $$dst (attempt $$attempt)"
+          return 0
+        fi
+      fi
+      if timeout 90 mount -t lustre -o relatime,flock "$$spec_it" "$$dst" 2>&1 | tee -a "$$LOG"; then
+        if lab_is_lustre_at "$$dst" && ! lab_is_lustre_at /data; then
+          lab_log "OK: mount -t lustre -o relatime,flock $$spec_it $$dst (attempt $$attempt)"
+          return 0
+        fi
+      fi
+      lab_log "RETRY $$attempt/3: lustre $$remote_rel -> $$dst"
+      sleep $$((attempt * 2))
+    done
+    lab_log "WARN: remote fileset $$remote_rel failed; trying next candidate"
   done
-  lab_log "FAIL: lustre mount $$spec -> $$dst after 5 attempts"
+  lab_log "FAIL: lustre mount $$rel -> $$dst (tried: $$remote_rels)"
   return 1
 }
 
@@ -325,7 +322,6 @@ lab_mount_domain_paths() {
         lab_prune_empty_nested_tool_dirs AL
         ;;
       FUTURENSE)
-        # Futurense: Cadence tools + modules only — not /data/semicon_labs_pd or /data/DV.
         for rel in tools/PD pdk tools/DV futurense_modules; do
           lab_lustre_mount_path "$$rel" || fail=1
         done
@@ -439,7 +435,7 @@ lab_run_mount_pass() {
   local mount_rc=0
   # If already healthy, still prune nested empty junk (do not skip that).
   if lab_paths_already_ok; then
-    lab_drop_futurense_excluded_mounts
+    lab_drop_fut_x
     lab_verify_mounts || true
     lab_prune_nested_for_tools_list
     lab_log "already healthy; skipped remount, ran nested-dir prune"
@@ -452,9 +448,9 @@ lab_run_mount_pass() {
     return 1
   fi
   mkdir -p "$${DATA_ROOT}" 2>/dev/null || true
-  lab_drop_futurense_excluded_mounts
+  lab_drop_fut_x
   lab_mount_domain_paths || mount_rc=1
-  lab_drop_futurense_excluded_mounts
+  lab_drop_fut_x
   lab_prune_nested_for_tools_list
   lab_verify_mounts || mount_rc=1
   return $$mount_rc

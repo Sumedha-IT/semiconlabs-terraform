@@ -1,17 +1,21 @@
 #!/bin/bash
-# post-OS disk expansion - idempotent
-set -euo pipefail
+# Compact post-OS disk expand (same as boothook). Kept for manual/SSM use.
+set -uo pipefail
 LOG=/var/log/lab-disk-expand.log
 exec > >(tee -a "$LOG") 2>&1
-
 echo "=== Disk expansion start $(date) ==="
-# growpart is pre-installed on golden AMI; do not call dnf here (SIGBUS on corrupt rpm DB).
-if ! lsblk /dev/nvme0n1p2 &>/dev/null; then
-  echo "WARN: /dev/nvme0n1p2 not found - skipping"
-else
-  growpart /dev/nvme0n1 2 || true
-  pvresize /dev/nvme0n1p2 || true
+grow_fs() {
+  local mp="$1" s f; s=$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null) || return 0
+  f=$(findmnt -n -o FSTYPE --target "$mp" 2>/dev/null) || return 0
+  case "$f" in xfs) xfs_growfs "$mp" 2>/dev/null || true ;; ext*) resize2fs "$s" 2>/dev/null || true ;; esac
+}
+if [ -b /dev/nvme0n1p4 ]; then growpart /dev/nvme0n1 4 || true; grow_fs /
+elif [ -b /dev/xvda4 ]; then growpart /dev/xvda 4 || true; grow_fs /
+elif [ -b /dev/nvme0n1p2 ]; then
+  growpart /dev/nvme0n1 2 || true; pvresize /dev/nvme0n1p2 || true
   lvextend -r -l +100%FREE /dev/cl/root || true
 fi
-
+findmnt -n /home >/dev/null 2>&1 || { mkdir -p /home; mount /home 2>/dev/null || mount -a 2>/dev/null || true; }
+findmnt -n /home >/dev/null 2>&1 && grow_fs /home
+echo "root: $(df -h / 2>/dev/null | tail -1)"
 echo "=== Disk expansion complete $(date) ==="

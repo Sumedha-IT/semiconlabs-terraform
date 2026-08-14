@@ -16,16 +16,57 @@ INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
   "http://169.254.169.254/latest/meta-data/instance-id" || hostname)
 lab_log "bootstrap start instance=$INSTANCE_ID ad=${enable_ad_join}/${ad_join_mechanism}"
 
-# AMI ships ~8G LVM root on 30-40G EBS - expand before any writes or AD join (keytab needs /tmp).
-lab_log "inline root disk expand (AMI ships ~8G root on larger EBS)"
-if [ -b /dev/nvme0n1p2 ]; then
-  command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 2 2>&1 || true
-  command -v pvresize >/dev/null 2>&1 && pvresize /dev/nvme0n1p2 2>&1 || true
-  if command -v lvextend >/dev/null 2>&1 && lvs /dev/cl/root >/dev/null 2>&1; then
-    lvextend -r -l +100%FREE /dev/cl/root 2>&1 || true
-  fi
-  lab_log "root disk: $(df -h / 2>/dev/null | tail -1)"
+# New AMI: / on xvda4|nvme0n1p4 (~15G), /home on xvdb|nvme1n1 (~10G fstab). Legacy LVM fallback kept.
+lab_log "inline disk layout: / on xvda4|nvme0n1p4 (~15G), /home on xvdb|nvme1n1 (~10G fstab)"
+lab_grow_fs() {
+  local mp="$1" src fst
+  src="$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null || true)"
+  [ -n "$src" ] || return 0
+  fst="$(findmnt -n -o FSTYPE --target "$mp" 2>/dev/null || true)"
+  case "$fst" in
+    xfs) command -v xfs_growfs >/dev/null 2>&1 && xfs_growfs "$mp" || true ;;
+    ext2|ext3|ext4) command -v resize2fs >/dev/null 2>&1 && resize2fs "$src" || true ;;
+  esac
+}
+_root_src="$(findmnt -n -o SOURCE --target / 2>/dev/null || true)"
+_root_src="$${_root_src%%\[*}"
+case "$${_root_src}" in
+  /dev/nvme0n1p*)
+    _part="$${_root_src##*p}"
+    command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 "$${_part}" 2>&1 || true
+    lab_grow_fs /
+    ;;
+  /dev/xvda[0-9]*|/dev/sda[0-9]*)
+    _part="$(echo "$${_root_src}" | sed -E 's|.*/[a-z]+([0-9]+)$$|\1|')"
+    _disk="$(echo "$${_root_src}" | sed -E 's|[0-9]+$$||')"
+    command -v growpart >/dev/null 2>&1 && growpart "$${_disk}" "$${_part}" 2>&1 || true
+    lab_grow_fs /
+    ;;
+  *)
+    if [ -b /dev/nvme0n1p4 ]; then
+      command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 4 2>&1 || true
+      lab_grow_fs /
+    elif [ -b /dev/xvda4 ]; then
+      command -v growpart >/dev/null 2>&1 && growpart /dev/xvda 4 2>&1 || true
+      lab_grow_fs /
+    elif [ -b /dev/nvme0n1p2 ]; then
+      command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 2 2>&1 || true
+      command -v pvresize >/dev/null 2>&1 && pvresize /dev/nvme0n1p2 2>&1 || true
+      if command -v lvextend >/dev/null 2>&1 && lvs /dev/cl/root >/dev/null 2>&1; then
+        lvextend -r -l +100%FREE /dev/cl/root 2>&1 || true
+      fi
+    fi
+    ;;
+esac
+if ! findmnt -n /home >/dev/null 2>&1; then
+  mkdir -p /home
+  mount /home 2>/dev/null || mount -a 2>/dev/null || true
 fi
+if findmnt -n /home >/dev/null 2>&1; then
+  lab_grow_fs /home
+  lab_log "/home: $(df -h /home 2>/dev/null | tail -1)"
+fi
+lab_log "root: $(df -h / 2>/dev/null | tail -1)"
 
 export AWS_DEFAULT_REGION="$REGION"
 export AWS_REGION="$REGION"
@@ -204,18 +245,62 @@ fi
 cat >/usr/local/sbin/lab-disk-expand.sh <<'LABDISKEXPAND'
 #!/bin/bash
 # post-OS disk expansion - idempotent
+# New AMI: / on xvda4|nvme0n1p4 (15 GiB), /home on xvdb|nvme1n1 (10 GiB, fstab).
 set -uo pipefail
 LOG=/var/log/lab-bootstrap.log
 echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-disk-expand] starting post-OS disk expansion..." | tee -a "$LOG"
-if command -v growpart >/dev/null 2>&1; then
-  growpart /dev/nvme0n1 2 2>&1 | tee -a "$LOG" || true
+
+lab_grow_fs() {
+  local mp="$1" src fst
+  src="$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null || true)"
+  [ -n "$src" ] || return 0
+  fst="$(findmnt -n -o FSTYPE --target "$mp" 2>/dev/null || true)"
+  case "$fst" in
+    xfs) command -v xfs_growfs >/dev/null 2>&1 && xfs_growfs "$mp" || true ;;
+    ext2|ext3|ext4) command -v resize2fs >/dev/null 2>&1 && resize2fs "$src" || true ;;
+  esac
+}
+
+_root_src="$(findmnt -n -o SOURCE --target / 2>/dev/null || true)"
+_root_src="${_root_src%%\[*}"
+case "$_root_src" in
+  /dev/nvme0n1p*)
+    _part="${_root_src##*p}"
+    command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 "$_part" 2>&1 | tee -a "$LOG" || true
+    lab_grow_fs /
+    ;;
+  /dev/xvda[0-9]*|/dev/sda[0-9]*)
+    _part="$(echo "$_root_src" | sed -E 's|.*/[a-z]+([0-9]+)$|\1|')"
+    _disk="$(echo "$_root_src" | sed -E 's|[0-9]+$||')"
+    command -v growpart >/dev/null 2>&1 && growpart "$_disk" "$_part" 2>&1 | tee -a "$LOG" || true
+    lab_grow_fs /
+    ;;
+  *)
+    if [ -b /dev/nvme0n1p4 ]; then
+      command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 4 2>&1 | tee -a "$LOG" || true
+      lab_grow_fs /
+    elif [ -b /dev/xvda4 ]; then
+      command -v growpart >/dev/null 2>&1 && growpart /dev/xvda 4 2>&1 | tee -a "$LOG" || true
+      lab_grow_fs /
+    elif [ -b /dev/nvme0n1p2 ]; then
+      command -v growpart >/dev/null 2>&1 && growpart /dev/nvme0n1 2 2>&1 | tee -a "$LOG" || true
+      command -v pvresize >/dev/null 2>&1 && pvresize /dev/nvme0n1p2 2>&1 | tee -a "$LOG" || true
+      if command -v lvextend >/dev/null 2>&1 && lvs /dev/cl/root >/dev/null 2>&1; then
+        lvextend -r -l +100%FREE /dev/cl/root 2>&1 | tee -a "$LOG" || true
+      fi
+    fi
+    ;;
+esac
+
+if ! findmnt -n /home >/dev/null 2>&1; then
+  mkdir -p /home
+  mount /home 2>/dev/null || mount -a 2>/dev/null || true
 fi
-if command -v pvresize >/dev/null 2>&1; then
-  pvresize /dev/nvme0n1p2 2>&1 | tee -a "$LOG" || true
+if findmnt -n /home >/dev/null 2>&1; then
+  lab_grow_fs /home
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-disk-expand] /home: $(df -h /home 2>/dev/null | tail -1)" | tee -a "$LOG"
 fi
-if command -v lvextend >/dev/null 2>&1; then
-  lvextend -r -l +100%FREE /dev/cl/root 2>&1 | tee -a "$LOG" || true
-fi
+echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-disk-expand] root: $(df -h / 2>/dev/null | tail -1)" | tee -a "$LOG"
 echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-disk-expand] disk expansion complete." | tee -a "$LOG"
 LABDISKEXPAND
 chmod +x /usr/local/sbin/lab-disk-expand.sh
@@ -799,24 +884,23 @@ systemctl daemon-reload
 systemctl reset-failed dcvserver 2>/dev/null || true
 
 # Virtual sessions created by backend; do not auto-create at boot.
-cat >/etc/dcv/dcv.conf <<'DCVBASE'
+# User-data owns /etc/dcv/dcv.conf — Start Lab / SSM must not rewrite it
+# (/etc/lab/dcv.conf.from-userdata).
+cat >/etc/dcv/dcv.conf <<EOF
 [server]
 
 [security]
 authentication="system"
 pam-service-name="dcv"
+%{ if trimspace(dcv_auth_token_verifier_url) != "" ~}
+auth-token-verifier="${dcv_auth_token_verifier_url}"
+no-tls-strict=true
+%{ endif ~}
 
 [session-management]
 create-session = false
-# Virtual sessions default to dcv-gl "default-on", which requires a DCV-GL license; without it the
-# X session often exits immediately and list-sessions stays empty after create-session returns 0.
+virtual-session-start-timeout = 90000
 enable-gl-in-virtual-sessions = always-off
-# Newest browser wins. max-concurrent-clients (1 client per session) belongs in
-# [session-management]; client-eviction-policy belongs in the
-# [session-management/automatic-console-session] subsection (NOT [server] or
-# [connectivity], where DCV silently ignores it and defaults to reject). When the
-# 1-client limit is hit, DCV closes the same user's OLDEST connection instead of
-# rejecting the new one. Requires DCV >= 2022.1-13067.
 max-concurrent-clients = 1
 
 [session-management/automatic-console-session]
@@ -830,19 +914,27 @@ enable-client-resize=true
 [log]
 log-level=info
 
-DCVBASE
-
-cat >>/etc/dcv/dcv.conf <<EOF
 [connectivity]
-%{ if dcv_web_listen_all ~}
 web-listen-endpoints=['0.0.0.0']
 quic-listen-endpoints=['0.0.0.0']
 enable-quic-frontend=false
-%{ endif ~}
 idle-timeout=0
-EOF
 
-# Block DCV client ? VM clipboard only; in-session copy/paste inside the desktop still works.
+[clipboard]
+enabled=false
+primary-selection-copy=false
+primary-selection-paste=false
+EOF
+chmod 644 /etc/dcv/dcv.conf 2>/dev/null || true
+install -d /etc/lab
+echo userdata >/etc/lab/dcv.conf.from-userdata
+%{ if trimspace(dcv_auth_token_verifier_url) != "" ~}
+lab_log "DCV: wrote /etc/dcv/dcv.conf (locked) auth-token-verifier enabled"
+%{ else ~}
+lab_log "DCV: wrote /etc/dcv/dcv.conf (locked) system/PAM auth only — set dcv_auth_token_verifier_url at apply"
+%{ endif ~}
+
+# Block DCV client ↔ VM clipboard only; in-session copy/paste inside the desktop still works.
 cat >/etc/dcv/default.perm <<'DCVPERM'
 [permissions]
 %any% deny clipboard-copy clipboard-paste

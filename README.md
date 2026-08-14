@@ -17,6 +17,14 @@ Required backend `.env` overrides are merged at apply time — see `Semiconlabs-
 
 Monolithic `user-data.sh.tftpl` (gzip, 16 KiB EC2 limit). Plan fails if over limit (`user-data-size.tf`). S3 split (`bootstrap-full.sh.tftpl` + stub) is prepared but commented in `main.tf`.
 
+## Futurense FSx mounts
+
+Pass `lab_efs_tools_mount_codes = ["FUTURENSE"]` only (backend Start Lab does this). User-data mounts:
+
+`/data/tools/PD`, `/data/pdk`, `/data/tools/DV`, `/data/futurense_modules`
+
+Do **not** also pass `PD`/`DV` — those mount `/data/semicon_labs_pd` and `/data/DV`. Leftover dirs are umounted/removed when `TOOLS_LIST` contains `FUTURENSE`.
+
 ## DCV hardening (user-data)
 
 New lab instances get from `user-data.sh.tftpl`:
