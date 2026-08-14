@@ -13,9 +13,10 @@ variable "instance_name" {
 }
 
 variable "ami_id" {
-  description = "Lab AMI — ap-south-1 golden image (GNOME+DCV+PAM+Lustre client pre-baked; AD join + SSSD finalize in user-data / SSM). Must ship lustre-client + kernel versionlock or FSx mounts fail with 'lustre kernel module not loaded'. Promoted from staging (ami-0248a5cc9bf3500c1)."
+  description = "Lab AMI — ap-south-1 Rocky XFCE golden (DCV+PAM+Lustre). Same image as staging. Must ship lustre-client + kernel versionlock or FSx mounts fail."
   type        = string
-  default     = "ami-0248a5cc9bf3500c1"
+  # Prior: ami-0248a5cc9bf3500c1
+  default     = "ami-0e39f934d23234213"
 }
 
 variable "name" {
@@ -32,9 +33,9 @@ variable "instance_type" {
 }
 
 variable "root_volume_size" {
-  description = "Root EBS volume size in GiB"
+  description = "Root EBS volume size in GiB. Rocky AMI floor is 16 GiB for PD/DV/AL."
   type        = number
-  default     = 30
+  default     = 16
 }
 
 variable "delete_root_volume_on_termination" {

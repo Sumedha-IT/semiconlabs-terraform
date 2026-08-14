@@ -9,7 +9,7 @@ variable "instance_name" {
 }
 variable "ami_id" {
   type    = string
-  default = "ami-0248a5cc9bf3500c1"
+  default = "ami-0e39f934d23234213"
 }
 variable "name" {
   type    = string
@@ -21,7 +21,7 @@ variable "instance_type" {
 }
 variable "root_volume_size" {
   type    = number
-  default = 15
+  default = 16
 }
 variable "enable_ebs_autoresize" {
   type    = bool
