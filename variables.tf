@@ -38,6 +38,12 @@ variable "root_volume_size" {
   default     = 16
 }
 
+variable "enable_ebs_autoresize" {
+  description = "When true, tag AutoResize=true and install PD /home guest check (invoke shared Lambda if free <= 5 GiB)."
+  type        = bool
+  default     = false
+}
+
 variable "delete_root_volume_on_termination" {
   description = "When false (dedicated labs), root EBS persists after EC2 terminates for retention/backup SKU"
   type        = bool

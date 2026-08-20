@@ -68,6 +68,35 @@ if findmnt -n /home >/dev/null 2>&1; then
 fi
 lab_log "root: $(df -h / 2>/dev/null | tail -1)"
 
+if [ "${enable_ebs_autoresize}" = "true" ]; then
+  echo "ebs-autoresize-${lab_environment}" >/var/lib/lab-ebs-fn
+  echo "$INSTANCE_ID" >/var/lib/lab-instance-id
+  cat >/usr/local/sbin/lab-ebs-autoresize-check.sh <<'S'
+#!/bin/sh
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+LOG=/var/log/lab-ebs-autoresize.log
+FN=$(cat /var/lib/lab-ebs-fn 2>/dev/null)||exit 0
+I=$(cat /var/lib/lab-instance-id 2>/dev/null)||exit 0
+findmnt -n /home >/dev/null 2>&1||exit 0
+A=$(df -P /home|awk 'NR==2{print $4+0}')
+[ -n "$A" ]&&[ "$A" -le 5242880 ]||exit 0
+LK=/var/lib/lab-ebs-last
+N=$(date +%s)
+[ -f "$LK" ]&&[ $((N-$(cat "$LK"))) -lt 21600 ]&&exit 0
+sleep $(( $(echo "$I"|cksum|awk '{print $1}') % 90 ))
+aws ec2 create-tags --resources "$I" --tags Key=EbsHomeLow,Value=1 >>"$LOG" 2>&1||true
+if aws lambda invoke --function-name "$FN" --invocation-type Event --cli-binary-format raw-in-base64-out --payload "{\"instance_ids\":[\"$I\"],\"trigger\":\"guest\"}" /tmp/ebs.out >>"$LOG" 2>&1; then
+  echo "$N">"$LK"
+else
+  echo "$(date -u +%FT%TZ) invoke_failed iid=$I fn=$FN avail_1k=$A" >>"$LOG"
+fi
+S
+  chmod +x /usr/local/sbin/lab-ebs-autoresize-check.sh
+  echo '*/5 * * * * root /usr/local/sbin/lab-ebs-autoresize-check.sh' >/etc/cron.d/lab-ebs-autoresize
+  chmod 644 /etc/cron.d/lab-ebs-autoresize
+  lab_log "ebs autoresize: guest /home check every 5 min (Lambda only if free<=5GiB)"
+fi
+
 export AWS_DEFAULT_REGION="$REGION"
 export AWS_REGION="$REGION"
 if ! grep -q '^AWS_DEFAULT_REGION=' /etc/environment 2>/dev/null; then

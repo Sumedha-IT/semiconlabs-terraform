@@ -63,6 +63,7 @@ locals {
     lab_efs_open_tool_execute                 = var.lab_efs_open_tool_execute
     # SSH public key is injected via SSM after boot — never embed in user-data (size).
     lab_ssh_public_key_b64 = ""
+    enable_ebs_autoresize  = var.enable_ebs_autoresize
   }
 
   # TEMP (prod): monolithic user-data — keep under 16 KiB gzip. Do not embed large per-lab blobs here.
@@ -169,6 +170,7 @@ resource "aws_instance" "CentOS8-AMD" {
       LabBootstrap   = "PENDING"
     },
     trimspace(var.student_id) != "" ? { student_id = trimspace(var.student_id) } : {},
+    var.enable_ebs_autoresize ? { AutoResize = "true" } : {},
   )
 }
 
