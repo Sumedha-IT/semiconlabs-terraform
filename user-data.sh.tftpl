@@ -1,5 +1,4 @@
 #!/bin/bash
-# Keep gzip user-data <= 16384 B; grow via bootstrap-full on S3 + stub (see main.tf).
 set -uo pipefail
 
 LOG=/var/log/lab-bootstrap.log
@@ -16,8 +15,7 @@ INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
   "http://169.254.169.254/latest/meta-data/instance-id" || hostname)
 lab_log "bootstrap start instance=$INSTANCE_ID ad=${enable_ad_join}/${ad_join_mechanism}"
 
-# New AMI: / on xvda4|nvme0n1p4 (~15G), /home on xvdb|nvme1n1 (~10G fstab). Legacy LVM fallback kept.
-lab_log "inline disk layout: / on xvda4|nvme0n1p4 (~15G), /home on xvdb|nvme1n1 (~10G fstab)"
+lab_log "inline root disk expand (AMI: / on xvda4|nvme0n1p4 ~15G, /home on xvdb|nvme1n1 ~10G fstab)"
 lab_grow_fs() {
   local mp="$1" src fst
   src="$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null || true)"
@@ -167,7 +165,6 @@ lab_finalize_sssd_for_dcv() {
   systemctl restart sssd || true
 }
 
-# IT: do NOT add 10.x.x.x:/ /efs lines to /etc/fstab (breaks reboot). Remove legacy snippets only.
 sed -i '/# BEGIN-lab-bootstrap-efs/,/# END-lab-bootstrap-efs/d' /etc/fstab 2>/dev/null || true
 sed -i '/[[:space:]]\/efs[[:space:]]/d' /etc/fstab 2>/dev/null || true
 sed -i '\|/[[:space:]]*/PD[[:space:]]|d' /etc/fstab 2>/dev/null || true
@@ -180,8 +177,6 @@ systemctl enable sshd
 systemctl restart sshd
 
 %{ if trimspace(lab_ssh_public_key_b64) != "" ~}
-# Optional: embed lab SSH pubkey in user-data (disabled by default - exceeds EC2 16 KiB gzip budget).
-# Backend injects the same key via SSM after the instance is up.
 lab_log "install lab SSH pubkey from Terraform (base64 payload; no aws_key_pair)"
 LAB_B64='${lab_ssh_public_key_b64}'
 mkdir -p /etc/lab
@@ -257,7 +252,6 @@ systemctl enable lab-ssh-key-bootstrap.service 2>/dev/null || true
 lab_log "lab SSH pubkey: skipped (backend SSM inject)"
 %{ endif ~}
 
-# Golden AMI: dnf/rpm SIGBUS on corrupt Berkeley DB; binaries are pre-baked - never dnf at boot.
 lab_log "early packages: binary check only (no dnf/rpm at boot)"
 EARLY_MISSING=""
 for b in realm adcli oddjobd sssd tcsh csh curl unzip aws; do
@@ -353,7 +347,6 @@ systemctl daemon-reload || true
 systemctl enable lab-disk-expand.service 2>/dev/null || true
 /usr/local/sbin/lab-disk-expand.sh || true
 
-# Always install tcsh/csh login profile handoff and csh system env hooks
 cat >/etc/profile.d/zz-lab-efs-tools.sh <<'ZZLABEFS'
 # Lab PD/AL/DV vendor env: pdsource, alsource, dvsource are tcsh/csh (setenv, set path = (...)).
 # Never `.` them in bash - use zz-lab-efs-tools.csh or login tcsh instead.
@@ -377,78 +370,37 @@ ZZLABEFS
 chmod 644 /etc/profile.d/zz-lab-efs-tools.sh 2>/dev/null || true
 
 cat >/etc/profile.d/zz-lab-efs-tools.csh <<'ZZLABEFSCSH'
-# ============================================================================
-# semiconlabs learner tcsh env
-#   - interactive terminals only (DCV black-screen fix)
-#   - lands the shell back in the directory the terminal was opened from
-#   - guard is an env var, so nested tcsh sessions skip the slow NFS reload
-# Same body as backend lab-pd-env-harden.sh (Setup Lab must not ship the old compact script).
-# ============================================================================
-
+# interactive tcsh only (DCV); env guard skips nested reload
 set _lab_user = `sh -c 'whoami 2>/dev/null'`
-if ( "$_lab_user" == "root"       ) goto lab_efs_done
-if ( "$_lab_user" == "centos"     ) goto lab_efs_done
-if ( "$_lab_user" == "ec2-user"   ) goto lab_efs_done
-if ( "$_lab_user" == "ssm-user"   ) goto lab_efs_done
-if ( "$_lab_user" == "cloud-user" ) goto lab_efs_done
-if ( "$_lab_user" == "ubuntu"     ) goto lab_efs_done
-if ( "$_lab_user" == "admin"      ) goto lab_efs_done
-
+if ( "$_lab_user" == "root" || "$_lab_user" == "centos" || "$_lab_user" == "ec2-user" || "$_lab_user" == "ssm-user" || "$_lab_user" == "cloud-user" || "$_lab_user" == "ubuntu" || "$_lab_user" == "admin" ) goto lab_efs_done
 if ( ! $?prompt ) goto lab_efs_done
 set _lab_tty = `sh -c 'tty 2>/dev/null || true'`
-if ( "$_lab_tty" == "not a tty" ) goto lab_efs_done
-if ( "$_lab_tty" == ""          ) goto lab_efs_done
-
+if ( "$_lab_tty" == "not a tty" || "$_lab_tty" == "" ) goto lab_efs_done
 if ( ! $?_LAB_EFS_TOOLS_LOADED ) then
   setenv _LAB_EFS_TOOLS_LOADED 1
   set _orig_dir = "$cwd"
-
   if ( ! -r /etc/lab/efs-tool-sources.lst ) then
     sh -c 'install -d /etc/lab; : >/etc/lab/efs-tool-sources.lst; for p in /data/tools/pdsource /data/tools/PD/pdsource /data/tools/alsource /data/tools/AL/alsource /data/tools/dvsource /data/tools/DV/dvsource; do [ -f "$p" ] && echo "$p" >>/etc/lab/efs-tool-sources.lst; done; cp -f /etc/lab/efs-tool-sources.lst /etc/lab/efs-tool-sources.raw.lst 2>/dev/null || true' >& /dev/null
   endif
-
-  if ( ! $?MODUSHOME    ) setenv MODUSHOME    ""
-  if ( ! $?JOULES_HOME  ) setenv JOULES_HOME  ""
+  if ( ! $?MODUSHOME ) setenv MODUSHOME ""
+  if ( ! $?JOULES_HOME ) setenv JOULES_HOME ""
   if ( ! $?CDS_INST_DIR ) setenv CDS_INST_DIR ""
-  if ( ! $?CDS_ROOT     ) setenv CDS_ROOT     ""
-
-  set _lab_skip = ( yam4tp )
-
+  if ( ! $?CDS_ROOT ) setenv CDS_ROOT ""
   if ( -r /etc/lab/efs-tool-sources.lst ) then
-    foreach f ( `grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[[:space:]]*$'` )
-
-      set _skip = 0
-      foreach b ( $_lab_skip )
-        if ( "$f" =~ *$${b}* ) set _skip = 1
-      end
-      if ( $_skip ) continue
-
+    foreach f ( `grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[[:space:]]*$' | grep -v yam4tp` )
       if ( ! -f "$f" ) continue
-
-      if ( "$f" =~ *pdsource* ) then
-        if ( -d /data/tools/PD ) cd /data/tools/PD
-      endif
-      if ( "$f" =~ *alsource* ) then
-        if ( -d /data/tools/AL ) cd /data/tools/AL
-      endif
-      if ( "$f" =~ *dvsource* || "$f" =~ *cdnsource* ) then
-        if ( -d /data/tools/DV ) cd /data/tools/DV
-      endif
-
+      if ( "$f" =~ *pdsource* && -d /data/tools/PD ) cd /data/tools/PD
+      if ( "$f" =~ *alsource* && -d /data/tools/AL ) cd /data/tools/AL
+      if ( ( "$f" =~ *dvsource* || "$f" =~ *cdnsource* ) && -d /data/tools/DV ) cd /data/tools/DV
       source "$f"
       cd "$_orig_dir"
     end
-    unset f b _skip
+    unset f
   endif
-  unset _lab_skip
-
-  if ( $?ICC2_HOME ) then
-    if ( "$ICC2_HOME" != "" ) then
-      if ( -d "$ICC2_HOME/linux64/bin" ) set path = ( "$ICC2_HOME/linux64/bin" $path )
-      if ( -d "$ICC2_HOME/bin"         ) set path = ( "$ICC2_HOME/bin" $path )
-    endif
+  if ( $?ICC2_HOME && "$ICC2_HOME" != "" ) then
+    if ( -d "$ICC2_HOME/linux64/bin" ) set path = ( "$ICC2_HOME/linux64/bin" $path )
+    if ( -d "$ICC2_HOME/bin" ) set path = ( "$ICC2_HOME/bin" $path )
   endif
-
   if ( "$cwd" != "$_orig_dir" ) then
     if ( -d "$_orig_dir" ) then
       cd "$_orig_dir"
@@ -457,52 +409,36 @@ if ( ! $?_LAB_EFS_TOOLS_LOADED ) then
     endif
   endif
   unset _orig_dir
-
 endif
-
 set prompt = '%%{\033[32m%}%n@%m(%n):[...%~]$%%{\033[0m%} '
-
 lab_efs_done:
 unset _lab_user _lab_tty
-
 ZZLABEFSCSH
 chmod 644 /etc/profile.d/zz-lab-efs-tools.csh 2>/dev/null || true
 
 for skel_rc in .tcshrc .cshrc; do
   if [ ! -f /etc/skel/$skel_rc ] || ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/skel/$skel_rc 2>/dev/null; then
-    {
-      echo '# semiconlabs-lab-efs-tool-env'
-      echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
-    } >>/etc/skel/$skel_rc
+    printf '%s\n' '# semiconlabs-lab-efs-tool-env' 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh' >>/etc/skel/$skel_rc
   fi
   chmod 644 /etc/skel/$skel_rc 2>/dev/null || true
 done
 if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/csh.cshrc 2>/dev/null; then
-  {
-    echo ''
-    echo '# semiconlabs-lab-efs-tool-env'
-    echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
-  } >>/etc/csh.cshrc
+  printf '\n%s\n%s\n' '# semiconlabs-lab-efs-tool-env' 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh' >>/etc/csh.cshrc
 fi
-lab_log "installed interactive tcsh/efs shell profiles (matches Start Lab harden)"
+lab_log "installed interactive tcsh/efs profiles"
 
-# Shared tool storage: FSx Lustre per-path mounts under /data.
 %{ if trimspace(lab_lustre_userdata_inc) != "" ~}
 ${lab_lustre_userdata_inc}
 %{ else ~}
 lab_log "shared storage: skipped (set lab_fsx_lustre_dns)"
 %{ endif ~}
 
-# LAB_ENVIRONMENT / LAB_ENV_TAG for guest scripts (FSx keys above stay intact).
 mkdir -p /etc/lab
 touch /etc/lab/efs-mount.env
 sed -i -E '/^LAB_ENVIRONMENT=/d;/^LAB_ENV_TAG=/d' /etc/lab/efs-mount.env 2>/dev/null || true
 printf '%s\n' "LAB_ENVIRONMENT='${lab_environment}'" "LAB_ENV_TAG='${lab_env_tag}'" >>/etc/lab/efs-mount.env
 
-# Futurense Labs (every lab): tcsh alias after FSx/EFS mount wiring — run via futurense_lab_setup.
-# Alias points at /data/... (Lustre); no-op until /data is mounted.
 cat >/etc/profile.d/zz-futurense-lab-setup.csh <<'FUTTCSH'
-# semiconlabs-futurense-lab-setup — Futurense project bootstrap (after FSx /data mount)
 if ( ! $?semiconlabs_futurense_lab_setup ) then
   set semiconlabs_futurense_lab_setup = 1
   alias futurense_lab_setup 'bash /data/futurense_modules/setup_project.sh'
@@ -524,7 +460,6 @@ if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-futurense-lab-setup' /etc/cs
 fi
 lab_log "installed Futurense tcsh alias futurense_lab_setup -> /data/futurense_modules/setup_project.sh"
 
-# Interactive shell for AD users (SSSD default_shell / override_shell). Install before join/finalize.
 LAB_SSSD_SH='${ad_sssd_default_shell}'
 if [[ "$LAB_SSSD_SH" == *tcsh* ]]; then
   if ! command -v tcsh >/dev/null 2>&1; then
@@ -535,7 +470,6 @@ if [[ "$LAB_SSSD_SH" == *tcsh* ]]; then
 fi
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:$PATH"
 
-# AWS CLI v2 - use lab_aws() for all CLI calls (prefers /usr/local/bin/aws after successful zip install).
 lab_ensure_awscli_v2 || true
 if [ -x /usr/local/bin/aws ]; then
   export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
@@ -550,8 +484,6 @@ lab_aws() {
     return 127
   fi
 }
-# Terraform: use a single `$` before `(` for bash $(...). Writing `$$` before `(` can leave
-# literal `$$` in rendered user_data -> bash treats `$$` as PID and errors near `(`.
 LAB_AWS_BOOT_LINE=$(lab_aws --version 2>&1 | head -1) || LAB_AWS_BOOT_LINE='(lab_aws failed)'
 lab_log "bootstrap aws: $LAB_AWS_BOOT_LINE"
 
@@ -562,7 +494,6 @@ ${lab_bootstrap_monitoring_script}
 %{ if enable_ad_join ~}
 lab_log "AD phase: mechanism=${ad_join_mechanism} domain=${ad_domain}"
 
-# Unique hostname => unique computer name in the directory (do not bake join into golden AMI).
 HOSTNAME_SAFE="lab-${suffix}-$${INSTANCE_ID}"
 hostnamectl set-hostname "$${HOSTNAME_SAFE}" 2>/dev/null || hostname "$${HOSTNAME_SAFE}"
 if ! grep -qF "$${HOSTNAME_SAFE}" /etc/hosts; then
@@ -611,34 +542,13 @@ SSSDCLOUDLABS
 }
 
 %{ if ad_join_mechanism == "ssm_aws_managed" ~}
-# JoinDirectoryServiceDomain only runs via SSM once the managed instance reports Online - ensure agent is up early.
 lab_log "ssm_aws_managed: enable/restart amazon-ssm-agent (required before directory join document)"
 systemctl enable amazon-ssm-agent.service 2>/dev/null || systemctl enable amazon-ssm-agent 2>/dev/null || true
 systemctl restart amazon-ssm-agent 2>/dev/null || lab_log "WARN could not restart amazon-ssm-agent (non-fatal)"
 
-# IMPORTANT: we do NOT call `aws ssm describe-instance-information` here.
-# That API requires `ssm:DescribeInstanceInformation`, which is NOT in
-# `AmazonSSMManagedInstanceCore`. With the default instance role the call
-# returns AccessDenied -> silently empty PingStatus -> false 300/900s timeout.
-# A LOCAL health check is exactly as good: once the agent is active and has
-# successfully exchanged credentials with AWS, the managed instance will be
-# reported Online to Fleet Manager and the association will deliver.
 lab_log "ssm_aws_managed: wait for amazon-ssm-agent local readiness (no AWS API needed)"
 SSM_ONLINE_DEADLINE=$(( $(date +%s) + 300 ))
 SSM_SEEN_GOOD=""
-# Readiness signals that work for EC2 instance-role identity (no
-# /var/lib/amazon/ssm/Vault/Store/RegistrationKey - that file is only
-# created for on-prem / hybrid activation).
-#
-# IMPORTANT: this script runs with `set -uo pipefail`. Any pipe stage
-# that returns non-zero (e.g. `tail` on a not-yet-created log file)
-# poisons the pipeline's exit code, so an earlier "{ journalctl; tail; }
-# | grep -q" version of this function silently returned 1 every time
-# when /var/log/amazon/ssm/amazon-ssm-agent.log hadn't been written
-# yet - even though the agent was perfectly healthy and journald had
-# `Credentials ready`. We test each source INDEPENDENTLY now, and try
-# several known log-file paths (location varies across agent versions
-# and AMIs).
 ssm_agent_local_online() {
   systemctl is-active --quiet amazon-ssm-agent 2>/dev/null || return 1
   PAT='Credentials ready|EC2 registration was successful|Registration info found for ec2 instance|HealthCheck reporting agent health'
@@ -657,10 +567,6 @@ while [ "$(date +%s)" -lt "$SSM_ONLINE_DEADLINE" ]; do
   sleep 10
 done
 if [ "$SSM_SEEN_GOOD" = "yes" ]; then
-  # IMPORTANT: Terraform creates `aws_ssm_association` only AFTER
-  # `time_sleep.wait_ssm_registration_after_ec2` (same duration as this var).
-  # A short sleep here made user-data poll for realm while NO association existed
-  # yet (~2 minute blind window vs 180s TF delay -> empty realm_list on lab 137).
   lab_log "ssm_aws_managed: agent locally healthy; settling ${ad_ssm_association_delay} (matches Terraform association delay, then polling for join)"
   sleep ${ad_ssm_association_delay}
 else
@@ -668,11 +574,6 @@ else
 fi
 %{ endif ~}
 
-# Ensure cloud / DCV users can run lab admin commands (sudo dcv create-session,
-# adcli, sssd restart) WITHOUT a TTY - golden AMIs don't always ship a
-# NOPASSWD sudoers drop-in, and `ssh ... centos@host "sudo dcv ..."` runs
-# without a controlling terminal so it fails with "sudo: a terminal is required
-# to read the password". Idempotent.
 if [ ! -f /etc/sudoers.d/95-lab-cloud-users ]; then
   cat >/etc/sudoers.d/95-lab-cloud-users <<'LAB_SUDO_EOF'
 # Installed by lab-bootstrap; required for DCV/SSSD admin commands over SSH.
@@ -696,7 +597,6 @@ LAB_SUDO_EOF
   chmod 0440 /etc/sudoers.d/95-lab-cloud-users
   lab_log "installed /etc/sudoers.d/95-lab-cloud-users (NOPASSWD for cloud/DCV users)"
 fi
-# Older labs: file exists without ssm-user - append so DCV over SSH as ssm-user matches centos.
 if [ -f /etc/sudoers.d/95-lab-cloud-users ] && ! grep -qE '^ssm-user[[:space:]]' /etc/sudoers.d/95-lab-cloud-users 2>/dev/null; then
   printf '\n# Lab append: DCV/SSM over non-interactive SSH\nDefaults:ssm-user !requiretty\nssm-user ALL=(ALL) NOPASSWD: ALL\n' >>/etc/sudoers.d/95-lab-cloud-users
   chmod 0440 /etc/sudoers.d/95-lab-cloud-users
@@ -791,7 +691,6 @@ else
   ADCLI_SAM_J='${ad_join_user}'
   case "$${ADCLI_SAM_J}" in *@*) ADCLI_SAM_J="$${ADCLI_SAM_J%%@*}";; esac
 
-  # Step 4.4 - Join the Domain (guide uses: echo 'PASSWORD' | sudo adcli join ... ; we use printf for safe newlines).
   do_adcli_join_cloudlabs_doc() {
     chronyc makestep 2>/dev/null || true
 %{ if ad_computer_ou != "" ~}
@@ -896,8 +795,6 @@ fi
 lab_finalize_sssd_for_dcv
 %{ endif ~}
 
-# DCV PAM: AD/SSSD must authenticate portal UPN. Always rewrite — older AMI stacks put
-# pam_unix before pam_sss without try_first_pass and Rocky/EL9 then reports incorrect password.
 lab_log "writing /etc/pam.d/dcv (pam_sss first, then pam_unix try_first_pass)"
 cat >/etc/pam.d/dcv <<'PAMDCV'
 #%PAM-1.0
@@ -958,9 +855,6 @@ DCVZZZ
 systemctl daemon-reload
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# Virtual sessions created by backend; do not auto-create at boot.
-# User-data owns /etc/dcv/dcv.conf — Start Lab / SSM must not rewrite it
-# (/etc/lab/dcv.conf.from-userdata).
 cat >/etc/dcv/dcv.conf <<EOF
 [server]
 
@@ -1009,7 +903,6 @@ lab_log "DCV: wrote /etc/dcv/dcv.conf (locked) auth-token-verifier enabled"
 lab_log "DCV: wrote /etc/dcv/dcv.conf (locked) system/PAM auth only — set dcv_auth_token_verifier_url at apply"
 %{ endif ~}
 
-# Block DCV client ↔ VM clipboard only; in-session copy/paste inside the desktop still works.
 cat >/etc/dcv/default.perm <<'DCVPERM'
 [permissions]
 %any% deny clipboard-copy clipboard-paste
@@ -1026,8 +919,6 @@ else
   fi
 fi
 
-# Rocky AMI: firewalld REJECT on 8443 → dcv-router "Host is unreachable" (113).
-# Open the port if firewalld is up, then disable it (SG is the network ACL).
 if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
   firewall-cmd --permanent --add-port=8443/tcp 2>/dev/null || true
   firewall-cmd --permanent --add-port=22/tcp 2>/dev/null || true
@@ -1041,7 +932,6 @@ systemctl unmask dcvserver 2>/dev/null || true
 systemctl enable dcvserver || true
 systemctl reset-failed dcvserver 2>/dev/null || true
 
-# DCV www UX v8: zombie-connecting guard + same-user-oldest (lab-dcv-guard.script.ts).
 if [ -d /usr/share/dcv/www ]; then
   cat >/usr/share/dcv/www/custom-popup.js <<'DCVPOP'
 if(!window.__lab_stop_hint_shown){window.__lab_stop_hint_shown=1;try{var n=parseInt(localStorage.getItem("lab_warn_count")||"0",10);if(n<3){localStorage.setItem("lab_warn_count",String(n+1));alert("Important: Closing this browser tab does NOT stop your lab session. It keeps running in the background. When you are done, click Stop Lab on the main portal.");}}catch(e){}}

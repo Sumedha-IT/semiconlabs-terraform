@@ -1,6 +1,3 @@
-# FSx Lustre: per-path mounts under /data (IT-tested form: host:/mountname/rel).
-# Domain flow unchanged: PD / DV / AL / Futurense via TOOLS_LIST.
-# No /efs, no softlinks, no chmod on tool trees.
 mkdir -p /etc/lab
 cat >/etc/lab/efs-mount.env <<'LABLUSTRENV'
 STORAGE_BACKEND=lustre
@@ -9,24 +6,17 @@ FSX_DNS='${trimspace(lab_fsx_lustre_dns)}'
 FSX_MOUNT_NAME='${trimspace(lab_fsx_lustre_mount_name)}'
 TOOLS_LIST='${join(" ", lab_efs_tools_mount_codes)}'
 LABLUSTRENV
-# World-readable: no secrets in efs-mount.env (FSx DNS / TOOLS_LIST only).
 chown root:root /etc/lab /etc/lab/efs-mount.env
 chmod 0755 /etc/lab /etc/lab/efs-mount.env
 
 cat >/usr/local/sbin/lab-efs-mount.sh <<'LABLUSTREMOUNT'
 #!/bin/bash
-# Safe per-path FSx Lustre remount for lab VMs.
-# - Exact mountpoint checks (never treat /data/foo as /data)
-# - Never umount /data when /data/* Lustre children exist
-# - If required mounts already healthy, exit OK without tearing anything down
-# - Serializes concurrent runs (systemd + cron + Start Lab)
 set -uo pipefail
 LOG=/var/log/lab-bootstrap.log
 lab_log() {
   echo "[$$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-lustre-mount] $$*" | tee -a "$$LOG"
 }
 [ -r /etc/lab/efs-mount.env ] || { lab_log "missing /etc/lab/efs-mount.env"; exit 1; }
-# shellcheck source=/dev/null
 . /etc/lab/efs-mount.env
 DATA_ROOT="$${DATA_ROOT:-/data}"
 
@@ -45,8 +35,6 @@ lab_prepare_mount_point() {
   if [ -e "$$mp" ]; then
     mv "$$mp" "$${mp}.lab-pre-mount" 2>/dev/null || rm -f "$$mp" 2>/dev/null || true
   fi
-  # Never mkdir deep paths while a parent is already Lustre — that writes empty
-  # dirs onto shared FSx (e.g. /data/tools/PD/tools/PD). Clear full /data first.
   parent=$$(dirname "$$mp")
   if lab_is_lustre_at /data || lab_is_lustre_at "$$parent"; then
     lab_log "WARN: prepare $$mp while lustre parent present — clearing legacy full mounts"
@@ -55,15 +43,12 @@ lab_prepare_mount_point() {
   mkdir -p "$$mp" || return 1
 }
 
-# Exact /proc/mounts mountpoint match only (field 2). Avoids false positives from
-# findmnt path walk or regex matching /data against /data/tools/PD.
 lab_is_lustre_at() {
   local mp="$$1"
   [ -n "$$mp" ] || return 1
   awk -v mp="$$mp" '$$2 == mp && $$3 == "lustre" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null
 }
 
-# Remove empty post-mount junk: yam4tp file/dir (0 bytes or empty dir).
 lab_rm_empty_yam4tp() {
   local f="$$1"
   [ -e "$$f" ] || return 0
@@ -74,7 +59,6 @@ lab_rm_empty_yam4tp() {
   fi
 }
 
-# Drop empty nested tools/<CODE>/tools (and empty yam4tp) leftovers on FSx.
 lab_prune_empty_nested_tool_dirs() {
   local code="$$1"
   local base nested tools_dir
@@ -113,7 +97,6 @@ lab_drop_fut_x() {
   done
 }
 
-# Stray host /tools (not a mount) left after old EFS/yam4tp mkdir.
 lab_prune_stray_root_tools() {
   if awk '$$2 == "/tools" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null; then
     return 0
@@ -124,7 +107,6 @@ lab_prune_stray_root_tools() {
   fi
 }
 
-# Prune for every tool code currently in TOOLS_LIST.
 lab_prune_nested_for_tools_list() {
   local c
   for c in $$TOOLS_LIST; do
@@ -173,7 +155,6 @@ lab_fsx_host() {
 
 lab_umount_target() {
   local t="$$1"
-  # Prefer hard umount; avoid lazy on /data — it races remounts and can leave full FSx visible.
   if umount "$$t" 2>/dev/null; then
     return 0
   fi
@@ -184,7 +165,6 @@ lab_umount_target() {
   umount -l "$$t" 2>/dev/null || true
 }
 
-# Drop a full FSx mount on /data (legacy). Per-path mounts under /data/* are the target layout.
 lab_clear_legacy_full_mounts() {
   local m t
   for m in /PD /AL /DV /tools /data/tools /var/lib/lab/fsx /mnt/data /mnt/lab-fsx; do
@@ -195,8 +175,6 @@ lab_clear_legacy_full_mounts() {
   done
   if lab_is_lustre_at /data; then
     lab_log "WARN: /data is a full lustre mount — dumping lustre targets: $$(awk '$$3=="lustre"{printf "%s ", $$2}' /proc/mounts)"
-    # Children must be removed first; umounting /data underneath them leaves FSx root visible
-    # (cdn/mgs/snps/pdsource) and hides DV/futurense_modules as separate mountpoints.
     if lab_has_lustre_children_under_data; then
       lab_log "WARN: unmounting /data/* children before clearing full /data"
       awk '$$3 == "lustre" && $$2 ~ /^\/data\// { print $$2 }' /proc/mounts 2>/dev/null | sort -r | while read -r t; do
@@ -252,7 +230,6 @@ lab_lustre_mount_path() {
       ;;
   esac
   lab_ensure_lustre_module || return 1
-  # Prod FSx exports tools/<CODE> — mount at /data/tools/<CODE>.
   remote_rels="$$rel"
   for remote_rel in $$remote_rels; do
     spec="$${host}@tcp:/$${FSX_MOUNT_NAME}/$${remote_rel}"
@@ -398,7 +375,6 @@ lab_verify_mounts() {
   return $$fail
 }
 
-# Quiet health check (no VERIFY logs). Returns 0 only when required paths are lustre.
 lab_paths_already_ok() {
   local c rel
   if lab_is_lustre_at "$${DATA_ROOT}"; then
@@ -434,7 +410,6 @@ lab_paths_already_ok() {
 
 lab_run_mount_pass() {
   local mount_rc=0
-  # If already healthy, still prune nested empty junk (do not skip that).
   if lab_paths_already_ok; then
     lab_drop_fut_x
     lab_verify_mounts || true
@@ -477,64 +452,24 @@ chmod +x /usr/local/sbin/lab-efs-mount.sh
 
 cat >/usr/local/sbin/lab-efs-tool-env.sh <<'LABEFSTOOLENV'
 #!/bin/bash
-# Seed /etc/lab/efs-tool-sources.lst for active domain(s).
 set -uo pipefail
-LOG=/var/log/lab-bootstrap.log
-lab_te_log() {
-  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] [lab-efs-tool-env] $*" | tee -a "$LOG"
-}
-lab_te_resolve_source() {
-  local code f
-  code=$(echo "$1" | tr '[:lower:]' '[:upper:]')
-  case "$code" in
-    PD)
-      for f in /data/tools/PD/pdsource /data/tools/pdsource; do
-        [ -f "$f" ] && { echo "$f"; return 0; }
-      done
-      echo "/data/tools/PD/pdsource"
-      ;;
-    DV)
-      for f in /data/tools/DV/dvsource /data/tools/dvsource; do
-        [ -f "$f" ] && { echo "$f"; return 0; }
-      done
-      echo "/data/tools/DV/dvsource"
-      ;;
-    AL)
-      for f in /data/tools/AL/alsource /data/tools/alsource; do
-        [ -f "$f" ] && { echo "$f"; return 0; }
-      done
-      echo "/data/tools/AL/alsource"
-      ;;
-    *) return 1 ;;
-  esac
-}
 install -d /etc/lab
-TOOLS_FROM_ENV=""
-[ -r /etc/lab/efs-mount.env ] && . /etc/lab/efs-mount.env
-if [ -n "$(echo $TOOLS_LIST | tr -d '[:space:]')" ]; then
-  TOOLS_FROM_ENV="$TOOLS_LIST"
-fi
+TOOLS_LIST=""; [ -r /etc/lab/efs-mount.env ] && . /etc/lab/efs-mount.env || true
 : >/etc/lab/efs-tool-sources.lst
-LAB_EFS_HAS_EXTRA=0
 if [ -r /etc/lab/efs-tool-sources.extra.lst ]; then
   while IFS= read -r f || [ -n "$f" ]; do
-    case "$f" in ''|'#'*) continue ;; *yam4tp*) continue ;; esac
-    LAB_EFS_HAS_EXTRA=1
+    case "$f" in ''|'#'*|*yam4tp*) continue ;; esac
     grep -qxF "$f" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$f" >>/etc/lab/efs-tool-sources.lst
-    lab_te_log "source -> $f (extra.lst)"
   done </etc/lab/efs-tool-sources.extra.lst
 fi
-if [ "$LAB_EFS_HAS_EXTRA" != "1" ]; then
-  for code in $TOOLS_FROM_ENV; do
-    [ -z "$code" ] && continue
-    path=$(lab_te_resolve_source "$code") || continue
-    [ -z "$path" ] && continue
-    grep -qxF "$path" /etc/lab/efs-tool-sources.lst 2>/dev/null || echo "$path" >>/etc/lab/efs-tool-sources.lst
-    if [ -f "$path" ]; then
-      lab_te_log "source -> $path (exists)"
-    else
-      lab_te_log "WARN source -> $path (missing)"
-    fi
+if [ ! -s /etc/lab/efs-tool-sources.lst ]; then
+  for code in $TOOLS_LIST; do
+    C=$(echo "$code" | tr '[:lower:]' '[:upper:]')
+    case "$C" in
+      PD) for f in /data/tools/PD/pdsource /data/tools/pdsource; do [ -f "$f" ] && { echo "$f" >>/etc/lab/efs-tool-sources.lst; break; }; done ;;
+      DV) for f in /data/tools/DV/dvsource /data/tools/dvsource; do [ -f "$f" ] && { echo "$f" >>/etc/lab/efs-tool-sources.lst; break; }; done ;;
+      AL) for f in /data/tools/AL/alsource /data/tools/alsource; do [ -f "$f" ] && { echo "$f" >>/etc/lab/efs-tool-sources.lst; break; }; done ;;
+    esac
   done
 fi
 cp -a /etc/lab/efs-tool-sources.lst /etc/lab/efs-tool-sources.raw.lst 2>/dev/null || true
@@ -544,10 +479,9 @@ chmod +x /usr/local/sbin/lab-efs-tool-env.sh
 
 cat >/etc/systemd/system/lab-efs-mount.service <<'LABEFSSVC'
 [Unit]
-Description=Lab FSx Lustre per-path mounts under /data
+Description=Lab FSx Lustre mounts under /data
 After=network-online.target
 Wants=network-online.target
-DefaultDependencies=yes
 
 [Service]
 Type=oneshot
@@ -562,11 +496,8 @@ StandardError=append:/var/log/lab-bootstrap.log
 WantedBy=multi-user.target
 LABEFSSVC
 
-# No @reboot cron: it raced systemd ~60s later, umounted /data, then failed modprobe and wiped mounts.
 rm -f /etc/cron.d/semiconlabs-lab-efs-mount 2>/dev/null || true
-
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable lab-efs-mount.service 2>/dev/null || true
-lab_log "Lustre: enabled lab-efs-mount.service (no @reboot cron; FSx DNS=${trimspace(lab_fsx_lustre_dns)}; per-path mounts under /data)"
-lab_log "Lustre: starting lab-efs-mount.service in background (AD join is critical path)"
+lab_log "Lustre: enable+start lab-efs-mount (dns=${trimspace(lab_fsx_lustre_dns)})"
 systemctl start lab-efs-mount.service 2>/dev/null &
