@@ -32,6 +32,7 @@ locals {
     lab_ssh_public_key_b64                    = ""
     enable_ebs_autoresize                     = var.enable_ebs_autoresize
     lab_environment                           = var.lab_environment
+    lab_env_tag                               = "LABS-PROD"
     lab_bootstrap_log_group                   = var.lab_bootstrap_log_group
     lab_monitoring_enabled                    = var.lab_monitoring_enabled
     lab_bootstrap_monitoring_script = var.lab_monitoring_enabled ? templatefile("${path.module}/lab-bootstrap-monitoring.sh.tftpl", {

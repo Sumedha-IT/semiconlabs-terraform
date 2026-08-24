@@ -49,7 +49,7 @@ variable "associate_public_ip_address" {
 }
 variable "env_tag" {
   type    = string
-  default = "LABS-STAGING"
+  default = "LABS-PROD"
 }
 variable "ad_directory_id" {
   type    = string

@@ -34,7 +34,9 @@ lab_pd_rebuild_filtered_lst() {
   local raw=/etc/lab/efs-tool-sources.raw.lst
   local out=/etc/lab/efs-tool-sources.lst
   local f c _codes _keep
-  install -d /etc/lab
+  install -d -m 0755 /etc/lab
+  # World-readable mount config (no secrets); learners must be able to cat/source it.
+  chmod 0755 /etc/lab/efs-mount.env 2>/dev/null || true
   TOOLS_LIST=""
   [ -r /etc/lab/efs-mount.env ] && . /etc/lab/efs-mount.env || true
   _codes="$TOOLS_LIST"

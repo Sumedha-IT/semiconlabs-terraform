@@ -48,6 +48,8 @@ locals {
     lab_efs_open_tool_execute = var.lab_efs_open_tool_execute
   }) : ""
 
+  lab_env_tag = "LABS-PROD"
+
   lab_user_data_template_vars = {
     aws_region                                = var.aws_region
     suffix                                    = var.suffix
@@ -80,6 +82,7 @@ locals {
     # SSH public key is injected via SSM after boot — never embed in user-data (size).
     lab_ssh_public_key_b64    = ""
     enable_ebs_autoresize     = var.enable_ebs_autoresize
+    lab_env_tag               = local.lab_env_tag
   }
 
   lab_user_data_rendered = templatefile("${path.module}/../user-data.sh.tftpl", merge(local.lab_user_data_template_vars, {

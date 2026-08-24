@@ -377,23 +377,54 @@ ZZLABEFS
 chmod 644 /etc/profile.d/zz-lab-efs-tools.sh 2>/dev/null || true
 
 cat >/etc/profile.d/zz-lab-efs-tools.csh <<'ZZLABEFSCSH'
-# Lab domain vendor env for tcsh — /data/tools only (no /efs, no /PD|/DV|/AL)
-if (! $?_LAB_EFS_TOOLS_LOADED ) then
-set _LAB_EFS_TOOLS_LOADED
-set _orig_dir = "$cwd"
+# ============================================================================
+# semiconlabs learner tcsh env
+#   - interactive terminals only (DCV black-screen fix)
+#   - lands the shell back in the directory the terminal was opened from
+#   - guard is an env var, so nested tcsh sessions skip the slow NFS reload
+# Same body as backend lab-pd-env-harden.sh (Setup Lab must not ship the old compact script).
+# ============================================================================
 
-if ( ! -r /etc/lab/efs-tool-sources.lst ) then
-  sh -c 'install -d /etc/lab; : >/etc/lab/efs-tool-sources.lst; for p in /data/tools/PD/pdsource /data/tools/pdsource /data/tools/AL/alsource /data/tools/alsource /data/tools/DV/dvsource /data/tools/dvsource; do [ -f "$p" ] && echo "$p" >>/etc/lab/efs-tool-sources.lst; done; cp -f /etc/lab/efs-tool-sources.lst /etc/lab/efs-tool-sources.raw.lst 2>/dev/null || true' >& /dev/null
-endif
+set _lab_user = `sh -c 'whoami 2>/dev/null'`
+if ( "$_lab_user" == "root"       ) goto lab_efs_done
+if ( "$_lab_user" == "centos"     ) goto lab_efs_done
+if ( "$_lab_user" == "ec2-user"   ) goto lab_efs_done
+if ( "$_lab_user" == "ssm-user"   ) goto lab_efs_done
+if ( "$_lab_user" == "cloud-user" ) goto lab_efs_done
+if ( "$_lab_user" == "ubuntu"     ) goto lab_efs_done
+if ( "$_lab_user" == "admin"      ) goto lab_efs_done
 
-if ( ! $?MODUSHOME ) setenv MODUSHOME ""
-if ( ! $?JOULES_HOME ) setenv JOULES_HOME ""
-if ( ! $?CDS_INST_DIR ) setenv CDS_INST_DIR ""
-if ( ! $?CDS_ROOT ) setenv CDS_ROOT ""
+if ( ! $?prompt ) goto lab_efs_done
+set _lab_tty = `sh -c 'tty 2>/dev/null || true'`
+if ( "$_lab_tty" == "not a tty" ) goto lab_efs_done
+if ( "$_lab_tty" == ""          ) goto lab_efs_done
 
-if ( -r /etc/lab/efs-tool-sources.lst ) then
-  foreach f (`grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[[:space:]]*$' | grep -v yam4tp`)
-    if ( -f "$f" ) then
+if ( ! $?_LAB_EFS_TOOLS_LOADED ) then
+  setenv _LAB_EFS_TOOLS_LOADED 1
+  set _orig_dir = "$cwd"
+
+  if ( ! -r /etc/lab/efs-tool-sources.lst ) then
+    sh -c 'install -d /etc/lab; : >/etc/lab/efs-tool-sources.lst; for p in /data/tools/pdsource /data/tools/PD/pdsource /data/tools/alsource /data/tools/AL/alsource /data/tools/dvsource /data/tools/DV/dvsource; do [ -f "$p" ] && echo "$p" >>/etc/lab/efs-tool-sources.lst; done; cp -f /etc/lab/efs-tool-sources.lst /etc/lab/efs-tool-sources.raw.lst 2>/dev/null || true' >& /dev/null
+  endif
+
+  if ( ! $?MODUSHOME    ) setenv MODUSHOME    ""
+  if ( ! $?JOULES_HOME  ) setenv JOULES_HOME  ""
+  if ( ! $?CDS_INST_DIR ) setenv CDS_INST_DIR ""
+  if ( ! $?CDS_ROOT     ) setenv CDS_ROOT     ""
+
+  set _lab_skip = ( yam4tp )
+
+  if ( -r /etc/lab/efs-tool-sources.lst ) then
+    foreach f ( `grep -v '^[[:space:]]*#' /etc/lab/efs-tool-sources.lst | grep -v '^[[:space:]]*$'` )
+
+      set _skip = 0
+      foreach b ( $_lab_skip )
+        if ( "$f" =~ *$${b}* ) set _skip = 1
+      end
+      if ( $_skip ) continue
+
+      if ( ! -f "$f" ) continue
+
       if ( "$f" =~ *pdsource* ) then
         if ( -d /data/tools/PD ) cd /data/tools/PD
       endif
@@ -403,28 +434,37 @@ if ( -r /etc/lab/efs-tool-sources.lst ) then
       if ( "$f" =~ *dvsource* || "$f" =~ *cdnsource* ) then
         if ( -d /data/tools/DV ) cd /data/tools/DV
       endif
+
       source "$f"
-    endif
-  end
-endif
-
-if ( $?ICC2_HOME ) then
-  if ( "$ICC2_HOME" != "" ) then
-    if ( -d "$ICC2_HOME/linux64/bin" ) set path = ( "$ICC2_HOME/linux64/bin" $path )
-    if ( -d "$ICC2_HOME/bin" ) set path = ( "$ICC2_HOME/bin" $path )
+      cd "$_orig_dir"
+    end
+    unset f b _skip
   endif
+  unset _lab_skip
+
+  if ( $?ICC2_HOME ) then
+    if ( "$ICC2_HOME" != "" ) then
+      if ( -d "$ICC2_HOME/linux64/bin" ) set path = ( "$ICC2_HOME/linux64/bin" $path )
+      if ( -d "$ICC2_HOME/bin"         ) set path = ( "$ICC2_HOME/bin" $path )
+    endif
+  endif
+
+  if ( "$cwd" != "$_orig_dir" ) then
+    if ( -d "$_orig_dir" ) then
+      cd "$_orig_dir"
+    else if ( $?HOME ) then
+      cd "$HOME"
+    endif
+  endif
+  unset _orig_dir
+
 endif
 
-if ( $?prompt ) set prompt = '%%{\033[32m%}%n@%m(%n):[...%~]$%%{\033[0m%} '
+set prompt = '%%{\033[32m%}%n@%m(%n):[...%~]$%%{\033[0m%} '
 
-set _lab_home = `sh -c 'getent passwd "$USER" 2>/dev/null | cut -d: -f6'`
-if ( "$_lab_home" != "" ) then
-  if ( -d "$_lab_home" ) cd "$_lab_home"
-endif
-if ( "$cwd" == "$_orig_dir" ) then
-  if ( $?HOME ) cd "$HOME"
-endif
-endif
+lab_efs_done:
+unset _lab_user _lab_tty
+
 ZZLABEFSCSH
 chmod 644 /etc/profile.d/zz-lab-efs-tools.csh 2>/dev/null || true
 
@@ -444,7 +484,7 @@ if [ -f /etc/csh.cshrc ] && ! grep -qF 'semiconlabs-lab-efs-tool-env' /etc/csh.c
     echo 'if ( -r /etc/profile.d/zz-lab-efs-tools.csh ) source /etc/profile.d/zz-lab-efs-tools.csh'
   } >>/etc/csh.cshrc
 fi
-lab_log "installed tcsh/efs shell profiles"
+lab_log "installed interactive tcsh/efs shell profiles (matches Start Lab harden)"
 
 # Shared tool storage: FSx Lustre per-path mounts under /data.
 %{ if trimspace(lab_lustre_userdata_inc) != "" ~}
@@ -452,6 +492,12 @@ ${lab_lustre_userdata_inc}
 %{ else ~}
 lab_log "shared storage: skipped (set lab_fsx_lustre_dns)"
 %{ endif ~}
+
+# LAB_ENVIRONMENT / LAB_ENV_TAG for guest scripts (FSx keys above stay intact).
+mkdir -p /etc/lab
+touch /etc/lab/efs-mount.env
+sed -i -E '/^LAB_ENVIRONMENT=/d;/^LAB_ENV_TAG=/d' /etc/lab/efs-mount.env 2>/dev/null || true
+printf '%s\n' "LAB_ENVIRONMENT='${lab_environment}'" "LAB_ENV_TAG='${lab_env_tag}'" >>/etc/lab/efs-mount.env
 
 # Futurense Labs (every lab): tcsh alias after FSx/EFS mount wiring — run via futurense_lab_setup.
 # Alias points at /data/... (Lustre); no-op until /data is mounted.

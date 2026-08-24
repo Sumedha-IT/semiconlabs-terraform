@@ -9,6 +9,9 @@ FSX_DNS='${trimspace(lab_fsx_lustre_dns)}'
 FSX_MOUNT_NAME='${trimspace(lab_fsx_lustre_mount_name)}'
 TOOLS_LIST='${join(" ", lab_efs_tools_mount_codes)}'
 LABLUSTRENV
+# World-readable: no secrets in efs-mount.env (FSx DNS / TOOLS_LIST only).
+chown root:root /etc/lab /etc/lab/efs-mount.env
+chmod 0755 /etc/lab /etc/lab/efs-mount.env
 
 cat >/usr/local/sbin/lab-efs-mount.sh <<'LABLUSTREMOUNT'
 #!/bin/bash
@@ -314,11 +317,9 @@ lab_mount_domain_paths() {
         lab_prune_empty_nested_tool_dirs DV
         ;;
       AL)
-        lab_lustre_mount_path tools/AL || fail=1
-        if [ "$$seen_pdk" != "1" ]; then
-          lab_lustre_mount_path pdk || fail=1
-          seen_pdk=1
-        fi
+        for rel in tools/AL CL_PDK layout_labs; do
+          lab_lustre_mount_path "$$rel" || fail=1
+        done
         lab_prune_empty_nested_tool_dirs AL
         ;;
       FUTURENSE)
@@ -373,7 +374,7 @@ lab_verify_mounts() {
         done
         ;;
       AL)
-        for rel in tools/AL pdk; do
+        for rel in tools/AL CL_PDK layout_labs; do
           if lab_is_lustre_at "$${DATA_ROOT}/$$rel"; then
             lab_log "VERIFY OK: $${DATA_ROOT}/$$rel (lustre)"
           else
@@ -417,7 +418,7 @@ lab_paths_already_ok() {
         done
         ;;
       AL)
-        for rel in tools/AL pdk; do
+        for rel in tools/AL CL_PDK layout_labs; do
           lab_is_lustre_at "$${DATA_ROOT}/$$rel" || return 1
         done
         ;;
