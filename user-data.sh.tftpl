@@ -436,7 +436,10 @@ lab_log "shared storage: skipped (set lab_fsx_lustre_dns)"
 mkdir -p /etc/lab
 touch /etc/lab/efs-mount.env
 sed -i -E '/^LAB_ENVIRONMENT=/d;/^LAB_ENV_TAG=/d' /etc/lab/efs-mount.env 2>/dev/null || true
-printf '%s\n' "LAB_ENVIRONMENT='${lab_environment}'" "LAB_ENV_TAG='${lab_env_tag}'" >>/etc/lab/efs-mount.env
+_lab_env_tag='${lab_env_tag}'
+[ -z "$_lab_env_tag" ] && _lab_env_tag='LABS-PRODUCTION'
+printf '%s\n' "LAB_ENVIRONMENT='${lab_environment}'" "LAB_ENV_TAG='$${_lab_env_tag}'" >>/etc/lab/efs-mount.env
+unset _lab_env_tag
 
 cat >/etc/profile.d/zz-futurense-lab-setup.csh <<'FUTTCSH'
 if ( ! $?semiconlabs_futurense_lab_setup ) then

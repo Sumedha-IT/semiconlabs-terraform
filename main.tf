@@ -32,7 +32,7 @@ locals {
     lab_efs_open_tool_execute = var.lab_efs_open_tool_execute
   }) : ""
 
-  lab_env_tag = "LABS-PROD"
+  lab_env_tag = "LABS-PRODUCTION"
 
   lab_user_data_template_vars = {
     aws_region                                = var.aws_region
