@@ -15,8 +15,8 @@ variable "instance_name" {
 variable "ami_id" {
   description = "Lab AMI — ap-south-1 Rocky XFCE golden (DCV+PAM+Lustre). Same image as staging. Must ship lustre-client + kernel versionlock or FSx mounts fail."
   type        = string
-  # Prior: ami-0e39f934d23234213, ami-0248a5cc9bf3500c1
-  default     = "ami-09a79dcfd63460a58"
+  # Prior: ami-09a79dcfd63460a58, ami-0248a5cc9bf3500c1
+  default     = "ami-0e39f934d23234213"
 }
 
 variable "name" {
@@ -57,7 +57,14 @@ variable "subnet_id" {
 }
 
 variable "lab_security_group_id" {
-  description = "Security group attached to lab EC2. Prod: sg-0addb5436378bc42a (lab-only-sg). Override via backend LAB_SECURITY_GROUP_ID."
+  description = <<-EOT
+    Security group attached to lab EC2.
+    Default/prod lab-only (no public internet): set via backend LAB_SECURITY_GROUP_ID
+    (e.g. sg-0addb5436378bc42a / semecon-labs-prod-lab-only-sg).
+    Futurense org learners: backend passes LAB_FUTURENSE_SECURITY_GROUP_ID
+    (e.g. sg-0006bc71ae6348c26 / futurense-prod-lab-sg) when organization name
+    contains "futurense". Terraform does not choose by org — Nest sets this var.
+  EOT
   type        = string
   default     = ""
 }
