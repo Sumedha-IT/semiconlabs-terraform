@@ -10,7 +10,8 @@ Host = FSx IP (e.g. `10.50.10.147`). Mount name = `t4zh7bev`.
 /data/tools/DV         ← …/tools/DV
 /data/tools/AL         ← …/tools/AL
 /data/semicon_labs_pd  ← …/semicon_labs_pd
-/data/pdk              ← …/pdk
+/data/pdk              ← …/pdk (PD/AL)
+/data/open_pdks        ← …/open_pdks (Futurense)
 /data/DV               ← …/DV
 /data/futurense_modules
 ```
@@ -19,7 +20,7 @@ No `/PD`, `/DV`, or `/AL` bind shortcuts — source from actual paths only.
 
 Domain selection via `TOOLS_LIST` (PD / DV / AL / FUTURENSE) is unchanged.
 
-**Futurense (`FUTURENSE`)** mounts: `tools/PD`, `pdk`, `tools/DV`, `futurense_modules` — **not** `/data/semicon_labs_pd` or `/data/DV`.
+**Futurense (`FUTURENSE`)** mounts: `tools/PD`, `open_pdks`, `tools/DV`, `futurense_modules` — **not** `/data/semicon_labs_pd`, `/data/pdk`, or `/data/DV`.
 
 ### PD
 
@@ -73,15 +74,15 @@ source /data/tools/AL/alsource
 ### Futurense
 
 ```bash
-mkdir -p /data/tools/PD /data/pdk /data/tools/DV /data/futurense_modules
+mkdir -p /data/tools/PD /data/open_pdks /data/tools/DV /data/futurense_modules
 
 mount -t lustre 10.50.10.147:/t4zh7bev/tools/PD /data/tools/PD
-mount -t lustre 10.50.10.147:/t4zh7bev/pdk /data/pdk
+mount -t lustre 10.50.10.147:/t4zh7bev/open_pdks /data/open_pdks
 mount -t lustre 10.50.10.147:/t4zh7bev/tools/DV /data/tools/DV
 mount -t lustre 10.50.10.147:/t4zh7bev/futurense_modules /data/futurense_modules
 ```
 
-Do **not** mount `/data/semicon_labs_pd` or `/data/DV` for Futurense.
+Do **not** mount `/data/semicon_labs_pd`, `/data/pdk`, or `/data/DV` for Futurense.
 
 ```tcsh
 cd /data/tools/PD

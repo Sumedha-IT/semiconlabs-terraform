@@ -90,7 +90,7 @@ lab_prune_empty_nested_tool_dirs() {
 lab_drop_fut_x() {
   case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in *" FUTURENSE "*) ;; *) return 0 ;; esac
   local rel dst
-  for rel in semicon_labs_pd DV; do
+  for rel in semicon_labs_pd DV pdk; do
     dst="$${DATA_ROOT}/$$rel"
     if lab_is_lustre_at "$$dst" || mountpoint -q "$$dst" 2>/dev/null; then lab_umount_target "$$dst" || true; fi
     [ -d "$$dst" ] && ! lab_is_lustre_at "$$dst" && ! mountpoint -q "$$dst" 2>/dev/null && rmdir "$$dst" 2>/dev/null || true
@@ -300,7 +300,7 @@ lab_mount_domain_paths() {
         lab_prune_empty_nested_tool_dirs AL
         ;;
       FUTURENSE)
-        for rel in tools/PD pdk tools/DV futurense_modules; do
+        for rel in tools/PD open_pdks tools/DV futurense_modules; do
           lab_lustre_mount_path "$$rel" || fail=1
         done
         lab_prune_empty_nested_tool_dirs PD
@@ -361,7 +361,7 @@ lab_verify_mounts() {
         done
         ;;
       FUTURENSE)
-        for rel in tools/PD pdk tools/DV futurense_modules; do
+        for rel in tools/PD open_pdks tools/DV futurense_modules; do
           if lab_is_lustre_at "$${DATA_ROOT}/$$rel"; then
             lab_log "VERIFY OK: $${DATA_ROOT}/$$rel (lustre)"
           else
@@ -399,7 +399,7 @@ lab_paths_already_ok() {
         done
         ;;
       FUTURENSE)
-        for rel in tools/PD pdk tools/DV futurense_modules; do
+        for rel in tools/PD open_pdks tools/DV futurense_modules; do
           lab_is_lustre_at "$${DATA_ROOT}/$$rel" || return 1
         done
         ;;

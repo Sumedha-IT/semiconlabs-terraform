@@ -22,5 +22,5 @@ enable_ad_join             = true
 # lab_fsx_lustre_dns          = "10.50.10.147"
 # lab_fsx_lustre_mount_name   = "t4zh7bev"
 # Futurense: lab_efs_tools_mount_codes = ["FUTURENSE"]
-#   mounts tools/PD + pdk + tools/DV + futurense_modules only
-#   (never /data/semicon_labs_pd or /data/DV)
+#   mounts tools/PD + open_pdks + tools/DV + futurense_modules only
+#   (never /data/semicon_labs_pd, /data/pdk, or /data/DV)

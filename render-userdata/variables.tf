@@ -17,6 +17,10 @@ variable "name" {
 }
 variable "instance_type" {
   type    = string
+  default = "m5ad.xlarge"
+}
+variable "instance_type_fallback" {
+  type    = string
   default = "m6a.xlarge"
 }
 variable "root_volume_size" {
