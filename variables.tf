@@ -31,7 +31,7 @@ variable "instance_type" {
     Primary lab EC2 type. Nest sets this per domain/tier:
       PD Basic (product Pro PD): m5ad.xlarge
       PD Pro (product Elite PD): r5ad.xlarge
-      DV and Analog Layout:      c6a.xlarge
+      DV and Layout:             c6a.xlarge
     Default is PD Basic. If this type is not offered in the lab subnet AZ,
     Terraform launches instance_type_fallback instead.
   EOT

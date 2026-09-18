@@ -21,7 +21,7 @@ Monolithic `user-data.sh.tftpl` (gzip, 16 KiB EC2 limit). Plan fails if over lim
 
 Pass `lab_efs_tools_mount_codes = ["FUTURENSE"]` only (backend Start Lab does this). User-data mounts:
 
-`/data/tools/PD`, `/data/open_pdks`, `/data/tools/DV`, `/data/futurense_modules`
+`/data/tools/PD`, `/data/open_pdks`, `/data/tools/DV`, `/data/futurense_modules`, `/data/futurense_space`
 
 Do **not** also pass `PD`/`DV` — those mount `/data/semicon_labs_pd` and `/data/DV`. Leftover dirs are umounted/removed when `TOOLS_LIST` contains `FUTURENSE`.
 
