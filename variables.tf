@@ -27,29 +27,16 @@ variable "name" {
 }
 
 variable "instance_type" {
-  description = <<-EOT
-    Primary lab EC2 type. Nest sets this per domain/tier:
-      PD Basic (product Pro PD): m5ad.xlarge
-      PD Pro (product Elite PD): r5ad.xlarge
-      DV and Layout:             c6a.xlarge
-    Default is PD Basic. If this type is not offered in the lab subnet AZ,
-    Terraform launches instance_type_fallback instead.
-  EOT
-  type        = string
-  default     = "m5ad.xlarge"
-}
-
-variable "instance_type_fallback" {
-  description = <<-EOT
-    Backup type when the primary is not offered in the AZ
-    (or when Nest retries after InsufficientInstanceCapacity / vCPU quota).
-      PD Basic: m6a.xlarge
-      PD Pro:   r6a.xlarge
-      DV/AL:    c5a.xlarge
-    Nest passes the matching fallback; this default is PD Basic.
-  EOT
+  description = "Instance Type for EC2"
   type        = string
   default     = "m6a.xlarge"
+}
+
+# Accepted so Nest tfvars do not fail; unused by this module (Nest retries by rewriting instance_type).
+variable "instance_type_fallback" {
+  description = "Optional Nest-only fallback type; ignored by Terraform (capacity retry rewrites instance_type)."
+  type        = string
+  default     = ""
 }
 
 variable "root_volume_size" {

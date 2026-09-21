@@ -145,42 +145,10 @@ output "private_key_pem" {
   sensitive = true
 }
 
-# Prefer the requested type when the subnet AZ offers it; otherwise the previous-generation fallback.
-data "aws_subnet" "lab" {
-  id = var.subnet_id
-}
-
-data "aws_ec2_instance_type_offerings" "lab" {
-  filter {
-    name   = "instance-type"
-    values = distinct(compact([var.instance_type, var.instance_type_fallback]))
-  }
-
-  filter {
-    name   = "location"
-    values = [data.aws_subnet.lab.availability_zone]
-  }
-
-  location_type = "availability-zone"
-}
-
-locals {
-  lab_offered_instance_types = toset(data.aws_ec2_instance_type_offerings.lab.instance_types)
-  instance_type_effective = (
-    contains(local.lab_offered_instance_types, var.instance_type)
-    ? var.instance_type
-    : (
-      trimspace(var.instance_type_fallback) != "" && contains(local.lab_offered_instance_types, var.instance_type_fallback)
-      ? var.instance_type_fallback
-      : var.instance_type
-    )
-  )
-}
-
 # Lab instance (Amazon Linux / DCV); bootstrap enables SSH, EFS, DCV, SSSD
 resource "aws_instance" "CentOS8-AMD" {
   ami                         = var.ami_id
-  instance_type               = local.instance_type_effective
+  instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   associate_public_ip_address = var.associate_public_ip_address
   vpc_security_group_ids      = [var.lab_security_group_id]
