@@ -9,8 +9,10 @@ Host = FSx IP (e.g. `10.50.10.147`). Mount name = `t4zh7bev`.
 /data/tools/PD         ← mount -t lustre 10.50.10.147:/t4zh7bev/tools/PD
 /data/tools/DV         ← …/tools/DV
 /data/tools/AL         ← …/tools/AL
+/data/layout_labs      ← …/layout_labs
+/data/CL_PDK           ← …/CL_PDK (Layout; was CL_PDK/16_nm + CL_PDK/7_nm)
 /data/semicon_labs_pd  ← …/semicon_labs_pd
-/data/pdk              ← …/pdk (PD/AL)
+/data/pdk              ← …/pdk (PD)
 /data/open_pdks        ← …/open_pdks (Futurense)
 /data/DV               ← …/DV
 /data/futurense_modules
@@ -59,10 +61,11 @@ source /data/tools/DV/dvsource
 ### AL
 
 ```bash
-mkdir -p /data/tools/AL /data/pdk
+mkdir -p /data/tools/AL /data/layout_labs /data/CL_PDK
 
 mount -t lustre 10.50.10.147:/t4zh7bev/tools/AL /data/tools/AL
-mount -t lustre 10.50.10.147:/t4zh7bev/pdk /data/pdk
+mount -t lustre 10.50.10.147:/t4zh7bev/layout_labs /data/layout_labs
+mount -t lustre 10.50.10.147:/t4zh7bev/CL_PDK /data/CL_PDK
 ```
 
 ```tcsh

@@ -97,6 +97,17 @@ lab_drop_fut_x() {
   done
 }
 
+# Layout used to mount CL_PDK/16_nm + CL_PDK/7_nm; drop those so /data/CL_PDK can mount.
+lab_drop_al_legacy_nm() {
+  case " $$(echo "$$TOOLS_LIST" | tr '[:lower:]' '[:upper:]') " in *" AL "*) ;; *) return 0 ;; esac
+  local rel dst
+  for rel in CL_PDK/16_nm CL_PDK/7_nm; do
+    dst="$${DATA_ROOT}/$$rel"
+    if lab_is_lustre_at "$$dst" || mountpoint -q "$$dst" 2>/dev/null; then lab_umount_target "$$dst" || true; fi
+    [ -d "$$dst" ] && ! lab_is_lustre_at "$$dst" && ! mountpoint -q "$$dst" 2>/dev/null && rmdir "$$dst" 2>/dev/null || true
+  done
+}
+
 lab_prune_stray_root_tools() {
   if awk '$$2 == "/tools" { found=1; exit } END { exit !found }' /proc/mounts 2>/dev/null; then
     return 0
@@ -294,8 +305,9 @@ lab_mount_domain_paths() {
         lab_prune_empty_nested_tool_dirs DV
         ;;
       AL)
-        # Layout: tools + labs + 16/7nm for all Layout users; access via AD finfet.
-        for rel in tools/AL layout_labs CL_PDK/16_nm CL_PDK/7_nm; do
+        # Layout: tools + labs + whole CL_PDK; access via AD finfet.
+        lab_drop_al_legacy_nm
+        for rel in tools/AL layout_labs CL_PDK; do
           lab_lustre_mount_path "$$rel" || fail=1
         done
         lab_prune_empty_nested_tool_dirs AL
@@ -352,7 +364,7 @@ lab_verify_mounts() {
         done
         ;;
       AL)
-        for rel in tools/AL layout_labs CL_PDK/16_nm CL_PDK/7_nm; do
+        for rel in tools/AL layout_labs CL_PDK; do
           if lab_is_lustre_at "$${DATA_ROOT}/$$rel"; then
             lab_log "VERIFY OK: $${DATA_ROOT}/$$rel (lustre)"
           else
@@ -395,7 +407,7 @@ lab_paths_already_ok() {
         done
         ;;
       AL)
-        for rel in tools/AL layout_labs CL_PDK/16_nm CL_PDK/7_nm; do
+        for rel in tools/AL layout_labs CL_PDK; do
           lab_is_lustre_at "$${DATA_ROOT}/$$rel" || return 1
         done
         ;;
