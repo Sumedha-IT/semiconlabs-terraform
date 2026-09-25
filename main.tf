@@ -169,7 +169,7 @@ resource "aws_instance" "CentOS8-AMD" {
       Name           = local.lab_instance_display_name
       Environment    = var.env_tag
       LabEnvironment = var.lab_environment
-      map-migrated   = "DADS45OSDL"
+      map-migrated   = "2D5W8TY58Z"
       LabBootstrap   = "PENDING"
     },
     trimspace(var.student_id) != "" ? { student_id = trimspace(var.student_id) } : {},
