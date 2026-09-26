@@ -69,7 +69,7 @@ variable "lab_security_group_id" {
     Default/prod lab-only (no public internet): set via backend LAB_SECURITY_GROUP_ID
     (e.g. sg-0addb5436378bc42a / semecon-labs-prod-lab-only-sg).
     Futurense org learners: backend passes LAB_FUTURENSE_SECURITY_GROUP_ID
-    (e.g. sg-0006bc71ae6348c26 / futurense-prod-lab-sg) when organization name
+    (e.g. sg-0dd5e0f6fb7400db9 / futurense-lab-sg) when organization name
     contains "futurense". Terraform does not choose by org — Nest sets this var.
   EOT
   type        = string
